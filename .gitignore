@@ -7,3 +7,7 @@ build/
 *.nca
 client/deploy/
 client/build/
+.ryujinx-p2/
+tools/RomfsTool/obj/
+tools/RomfsTool/bin/
+client/romfs/

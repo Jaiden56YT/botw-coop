@@ -5,13 +5,6 @@
 
 namespace coop::net {
 
-    struct Config {
-        const char* host;      /* IPv4 dotted address of the relay server */
-        u16 port;
-        const char* name;      /* player name shown to others */
-        const char* password;  /* session / room password */
-    };
-
     constexpr int MaxPeers = 4;
 
     struct Peer {
@@ -23,8 +16,9 @@ namespace coop::net {
         u64 state_tick; /* nn::os tick when the last state arrived */
     };
 
-    /* Starts the background network thread. Safe to call once. */
-    void Start(const Config& config, const u8 (&build_id)[16]);
+    /* Starts the background network thread, which loads settings
+       (see config.hpp), connects, and streams Link's state. Call once. */
+    void Start(const u8 (&build_id)[16]);
 
     bool IsConnected();
     u8 MyId();
@@ -32,6 +26,9 @@ namespace coop::net {
 
     /* Latest-wins: only the newest state is sent each network tick. Game thread. */
     void SubmitPlayerState(const PlayerState& state);
+
+    /* Host only: shares the world clock. Any thread. */
+    void SendWorldState(float time, s32 days);
 
     /* Sends a line to the server log. Dropped if the queue is full. Any thread. */
     void SendLog(const char* fmt, ...) __attribute__((format(printf, 1, 2)));

@@ -39,6 +39,11 @@ const (
 	MsgPlayerJoined MsgType = 10 // S->C: u8 id, string name
 	MsgPlayerLeft   MsgType = 11 // S->C: u8 id
 	MsgPlayerState  MsgType = 20 // C->S: PlayerState; S->C: u8 id + PlayerState
+
+	// Game messages (>= MsgGameFirst) are forwarded to everyone else in the
+	// room with the sender's id prepended. The server doesn't interpret them.
+	MsgGameFirst  MsgType = 30
+	MsgWorldState MsgType = 30 // host -> all: f32 WM_Time, s32 WM_NumberOfDays
 )
 
 // HelloPayload: u16 protocol, 16 bytes game build id, string name, string password.

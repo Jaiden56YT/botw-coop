@@ -4,6 +4,8 @@
 
 #include "coop_config.hpp"
 #include "net/client.hpp"
+#include "game/ghost.hpp"
+#include "game/autostart.hpp"
 
 namespace {
 
@@ -34,13 +36,9 @@ namespace {
             return;
         }
 
-        static const coop::net::Config config = {
-            .host = COOP_SERVER_HOST,
-            .port = COOP_SERVER_PORT,
-            .name = COOP_PLAYER_NAME,
-            .password = COOP_PASSWORD,
-        };
-        coop::net::Start(config, build_id);
+        coop::game::InstallGhosts();
+        coop::game::InstallAutostart();
+        coop::net::Start(build_id);
         coop::net::SendLog("hello from Hyrule: botw-coop M0 is running in v1.9.0");
     }
 }

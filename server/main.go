@@ -220,6 +220,11 @@ func (s *Server) dispatch(c *Client, msg Message) {
 		out := EncodeMessage(MsgPlayerState, append([]byte{c.id}, msg.Payload...))
 		s.broadcast(c, out, false)
 	default:
+		if msg.Type >= MsgGameFirst {
+			out := EncodeMessage(msg.Type, append([]byte{c.id}, msg.Payload...))
+			s.broadcast(c, out, true)
+			return
+		}
 		s.logf("%s: unknown message type %d", c.name, msg.Type)
 	}
 }

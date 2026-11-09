@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -17,9 +18,24 @@ func startServer(t *testing.T) string {
 		t.Fatal(err)
 	}
 	s := NewServer()
-	s.logf = t.Logf
+	// Server goroutines can outlive the test (connections close during
+	// cleanup); logging through t after it ends panics, so stop then.
+	var mu sync.Mutex
+	done := false
+	s.logf = func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !done {
+			t.Logf(format, args...)
+		}
+	}
 	go s.Serve(ln)
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() {
+		mu.Lock()
+		done = true
+		mu.Unlock()
+		ln.Close()
+	})
 	return ln.Addr().String()
 }
 
@@ -148,5 +164,21 @@ func TestPingIsAnswered(t *testing.T) {
 	a.conn.Write(EncodeMessage(MsgPing, putU64(42)))
 	if p := a.expect(MsgPong); string(p.Payload) != string(putU64(42)) {
 		t.Fatalf("pong payload %x", p.Payload)
+	}
+}
+
+func TestGameMessagesAreForwardedWithSenderID(t *testing.T) {
+	addr := startServer(t)
+	a := dial(t, addr, hello("Link", "pw"))
+	a.expect(MsgWelcome)
+	b := dial(t, addr, hello("Zelda", "pw"))
+	b.expect(MsgWelcome)
+	a.expect(MsgPlayerJoined)
+
+	payload := []byte{0, 0, 0x70, 0x42, 3, 0, 0, 0} // 60.0 degrees, day 3
+	a.conn.Write(EncodeMessage(MsgWorldState, payload))
+	got := b.expect(MsgWorldState)
+	if got.Payload[0] != 1 || string(got.Payload[1:]) != string(payload) {
+		t.Fatalf("forwarded payload %x", got.Payload)
 	}
 }

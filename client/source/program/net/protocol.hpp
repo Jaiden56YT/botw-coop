@@ -26,6 +26,9 @@ namespace coop::net {
         PlayerLeft   = 11,
         HostChanged  = 12,
         PlayerState  = 20,
+        /* Game messages: the server forwards these to everyone else in the
+           room, prefixed with the sender's id. */
+        WorldState   = 30, /* host -> all: f32 WM_Time, s32 WM_NumberOfDays */
     };
 
     /* Per-frame state of a player's own Link. Must stay 44 bytes. */

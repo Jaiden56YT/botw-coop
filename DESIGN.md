@@ -143,6 +143,12 @@ Each milestone is playable before the next one starts.
 | **M4** | **Progress** | Shrines and Divine Beasts together, shared Korok seeds and towers, flag whitelist, separate co-op saves with backups. |
 | **M5** | **Polish** | Cutscene watch mode, Blood Moon, fast-travel voting, trading, horses, the Rivals mode, 3–4 players. |
 
+**Progress (2026-11-09):**
+- **M0** is done.
+- **M1** works on screen, except the map icon. Other players appear as a moving ghost (a physics-free Sheikah monk actor added by the mod).
+- From **M2**, shared time of day is done, and the RomFS tooling for the Link puppet is in place.
+- The game-data flag access that **M4** needs is in place.
+
 ---
 
 ## 5. Biggest unknowns (to investigate early)

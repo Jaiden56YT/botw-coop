@@ -8,6 +8,12 @@
 #include <nn/os.hpp>
 #include <nn/socket.hpp>
 
+#include "../config.hpp"
+#include "../game/player.hpp"
+#include "../game/ghost.hpp"
+#include "../game/autostart.hpp"
+#include "../game/world.hpp"
+
 namespace coop::net {
 
     namespace {
@@ -21,7 +27,7 @@ namespace coop::net {
         alignas(0x1000) u8 g_ThreadStack[ThreadStackSize];
         nn::os::ThreadType g_Thread;
 
-        Config g_Config;
+        Settings g_Config;
         u8 g_BuildId[16];
 
         /* Shared between the game thread and the network thread. */
@@ -30,6 +36,10 @@ namespace coop::net {
         u8 g_MyId = 0;
         u8 g_HostId = 0;
         Peer g_Peers[MaxPeers];
+
+        bool g_WorldDirty = false;
+        float g_WorldTime = 0;
+        s32 g_WorldDays = 0;
 
         bool g_StateDirty = false;
         PlayerState g_OutState;
@@ -190,6 +200,19 @@ namespace coop::net {
                     }
                     return true;
                 }
+                case MsgType::WorldState: {
+                    u8 from = r.Get<u8>();
+                    float t = r.Get<float>();
+                    s32 d = r.Get<s32>();
+                    if (!r.Ok()) return false;
+                    bool from_host;
+                    {
+                        ScopedLock lock;
+                        from_host = from == g_HostId;
+                    }
+                    if (from_host) game::OnHostWorldState({t, d});
+                    return true;
+                }
                 case MsgType::Ping: {
                     Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Pong);
                     w.U64(r.Get<u64>());
@@ -257,6 +280,9 @@ namespace coop::net {
         bool Flush() {
             PlayerState state;
             bool send_state = false;
+            bool send_world = false;
+            float world_time = 0;
+            s32 world_days = 0;
             char logs[LogSlots][LogLen];
             int nlogs = 0;
             {
@@ -265,6 +291,12 @@ namespace coop::net {
                     state = g_OutState;
                     g_StateDirty = false;
                     send_state = true;
+                }
+                if (g_WorldDirty && g_Connected) {
+                    send_world = true;
+                    world_time = g_WorldTime;
+                    world_days = g_WorldDays;
+                    g_WorldDirty = false;
                 }
                 while (g_LogCount > 0) {
                     std::memcpy(logs[nlogs++], g_LogQueue[g_LogHead], LogLen);
@@ -275,6 +307,12 @@ namespace coop::net {
             for (int i = 0; i < nlogs; i++) {
                 Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Log);
                 w.Str(logs[i]);
+                if (!SendMsg(w)) return false;
+            }
+            if (send_world) {
+                Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::WorldState);
+                w.Bytes(&world_time, 4);
+                w.Bytes(&world_days, 4);
                 if (!SendMsg(w)) return false;
             }
             if (send_state) {
@@ -301,7 +339,62 @@ namespace coop::net {
             return true;
         }
 
+        /* Samples Link's position and queues it. Velocity comes from the
+           previous sample; facing from the direction of travel. */
+        void SamplePlayer() {
+            static float last[3];
+            static s64 last_ms = 0;
+
+            float pos[3];
+            float rot_y = 0;
+            if (!game::GetLocalPlayer(pos, &rot_y)) { last_ms = 0; return; }
+
+            s64 now = NowMs();
+            PlayerState st{};
+            std::memcpy(st.pos, pos, sizeof(pos));
+            if (last_ms != 0 && now > last_ms) {
+                float dt = (now - last_ms) / 1000.0f;
+                for (int i = 0; i < 3; i++) st.vel[i] = (pos[i] - last[i]) / dt;
+            }
+            st.rot_y = rot_y;
+            std::memcpy(last, pos, sizeof(pos));
+            last_ms = now;
+            SubmitPlayerState(st);
+        }
+
+        void LogPeers() {
+            Peer peers[MaxPeers];
+            GetPeers(peers);
+            float me[3] = {};
+            bool have_me = game::GetLocalPlayerPos(me);
+            for (auto& p : peers) {
+                if (!p.present || !p.has_state) continue;
+                float dx = p.state.pos[0] - me[0], dy = p.state.pos[1] - me[1], dz = p.state.pos[2] - me[2];
+                if (have_me)
+                    Logging.Log("[coop] %s at (%.1f, %.1f, %.1f), %.1fm away", p.name, p.state.pos[0], p.state.pos[1],
+                                p.state.pos[2], __builtin_sqrtf(dx * dx + dy * dy + dz * dz));
+                else
+                    Logging.Log("[coop] %s at (%.1f, %.1f, %.1f)", p.name, p.state.pos[0], p.state.pos[1], p.state.pos[2]);
+            }
+            if (have_me) SendLog("at (%.1f, %.1f, %.1f)", me[0], me[1], me[2]);
+            if (g_Config.echo || g_Config.autostart) {
+                game::LogPlayerDebug();
+                game::LogAutostartStats();
+            }
+        }
+
         void ThreadMain(void*) {
+            /* Give the game time to set up its file system before we touch the SD card. */
+            Sleep(3000);
+            LoadSettings(g_Config);
+            {
+                game::GhostSettings gs{};
+                std::memcpy(gs.actor_name, g_Config.ghost_actor, sizeof(gs.actor_name));
+                gs.echo = g_Config.echo;
+                std::memcpy(gs.test_spawn, g_Config.test_spawn, sizeof(gs.test_spawn));
+                game::ConfigureGhosts(gs);
+                game::EnableAutostart(g_Config.autostart);
+            }
             while (!InitNetwork()) Sleep(5000);
 
             s64 retry_ms = 1000;
@@ -318,7 +411,11 @@ namespace coop::net {
                 retry_ms = 1000;
 
                 s64 last_ping = NowMs();
+                s64 last_sample = 0, last_report = NowMs();
                 while (true) {
+                    s64 now = NowMs();
+                    if (now - last_sample >= 33) { last_sample = now; SamplePlayer(); }
+                    if (now - last_report >= 5000) { last_report = now; LogPeers(); }
                     bool idle = false;
                     if (!Flush() || !Pump(&idle)) break;
                     if (NowMs() - last_ping >= 2000) {
@@ -337,8 +434,7 @@ namespace coop::net {
         }
     }
 
-    void Start(const Config& config, const u8 (&build_id)[16]) {
-        g_Config = config;
+    void Start(const u8 (&build_id)[16]) {
         std::memcpy(g_BuildId, build_id, 16);
         nn::os::InitializeMutex(&g_Mutex, false, 0);
 
@@ -356,6 +452,13 @@ namespace coop::net {
         ScopedLock lock;
         g_OutState = state;
         g_StateDirty = true;
+    }
+
+    void SendWorldState(float time, s32 days) {
+        ScopedLock lock;
+        g_WorldTime = time;
+        g_WorldDays = days;
+        g_WorldDirty = true;
     }
 
     void SendLog(const char* fmt, ...) {
