@@ -1,0 +1,9 @@
+.venv/
+.tools/
+.gamefiles/
+build/
+*.nso
+*.nsp
+*.nca
+client/deploy/
+client/build/
