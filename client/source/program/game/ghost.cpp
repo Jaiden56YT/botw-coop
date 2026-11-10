@@ -19,6 +19,8 @@
 #include "revive.hpp"
 #include "gear.hpp"
 #include "items.hpp"
+#include "warp.hpp"
+#include "notify.hpp"
 #include "weapons.hpp"
 
 namespace coop::game {
@@ -751,6 +753,8 @@ namespace coop::game {
                 gear::Tick(NowMs());
                 weapons::Tick(NowMs());
                 items::Tick(NowMs());
+                warp::Tick(NowMs());
+                notify::Tick(NowMs());
                 LogMountedOffset(NowMs());
                 KeyScriptTick(NowMs());
                 g_InTick.store(false);

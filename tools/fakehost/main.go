@@ -11,14 +11,15 @@ import (
 	"bufio"
 	"encoding/binary"
 	"flag"
-	"hash/crc32"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"log"
 	"math"
 	"net"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -39,6 +40,9 @@ func str(s string) []byte {
 
 func f32(b []byte, v float32) { binary.LittleEndian.PutUint32(b, math.Float32bits(v)) }
 
+// When another player first reported a position (UnixNano), for timed gifts.
+var firstState atomic.Int64
+
 func main() {
 	addr := flag.String("addr", "127.0.0.1:7777", "relay address")
 	pw := flag.String("password", "test", "room password")
@@ -56,7 +60,7 @@ func main() {
 	gear := flag.String("gear", "", "HEAD,UPPER,LOWER armor actor names the fake player wears (e.g. Armor_001_Head,Armor_151_Upper,Armor_155_Lower), sent every 5 s")
 	still := flag.Bool("still", false, "stand still (at center + 6 m on x)")
 	bloody := flag.Bool("bloody", false, "host a Blood Moon tonight (WM_BloodyDay)")
-	gift := flag.String("gift", "", "weapon or item actor name to give every other player 15 s after joining (e.g. Weapon_Sword_001, Item_Fruit_A)")
+	gift := flag.String("gift", "", "weapon or item actor name to give every other player 15 s after one is first in the world (e.g. Weapon_Sword_001, Item_Fruit_A)")
 	ride := flag.Bool("ride", false, "report riding a horse (movement state 11)")
 	anims := flag.Bool("anims", false, "cycle the reported movement state (every one: stand, move, climb, swim, glide, jump, fall, horse, surf) every 5 s")
 	flag.Parse()
@@ -120,6 +124,7 @@ func main() {
 				if time.Now().Second()%5 == 0 {
 					anim := binary.LittleEndian.Uint32(body[1+28:])
 					log.Printf("player %d at (%.1f, %.1f, %.1f) anim %d", body[0], x, y, z, anim)
+					firstState.CompareAndSwap(0, time.Now().UnixNano())
 				}
 			}
 		}
@@ -192,7 +197,7 @@ func main() {
 			}
 			conn.Write(msg(34, p))
 		}
-		if !giftSent && time.Since(start) > 15*time.Second {
+		if fs := firstState.Load(); !giftSent && fs != 0 && time.Since(time.Unix(0, fs)) > 15*time.Second {
 			giftSent = true
 			for to := 1; to <= 4; to++ {
 				p := []byte{byte(to), 0, 0}

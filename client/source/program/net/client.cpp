@@ -18,6 +18,7 @@
 #include "../game/revive.hpp"
 #include "../game/weapons.hpp"
 #include "../game/items.hpp"
+#include "../game/notify.hpp"
 
 namespace coop::net {
 
@@ -180,9 +181,11 @@ namespace coop::net {
                     g_MyId = r.Get<u8>();
                     g_HostId = r.Get<u8>();
                     u8 count = r.Get<u8>();
+                    char first[32] = "a partner";
                     for (u8 i = 0; i < count && r.Ok(); i++) {
                         u8 id = r.Get<u8>();
-                        AddPeer(id, r.Str());
+                        Peer* p = AddPeer(id, r.Str());
+                        if (i == 0 && p) std::snprintf(first, sizeof(first), "%s", p->name);
                     }
                     g_Connected = true;
                     Logging.Log("[coop] joined as player %d (%s), %d other(s) here",
@@ -190,6 +193,8 @@ namespace coop::net {
                     /* Progress merges both ways: the others send us theirs (they see
                        PlayerJoined), and we send them ours. */
                     if (count > 0) game::progress::OnPlayerJoined();
+                    if (count == 1) game::notify::Show("Co-op: %s is here", first);
+                    else if (count > 1) game::notify::Show("Co-op: %d partners are here", count);
                     return r.Ok();
                 }
                 case MsgType::Reject: {
@@ -203,6 +208,7 @@ namespace coop::net {
                     auto name = r.Str();
                     AddPeer(id, name);
                     Logging.Log("[coop] %.*s joined", (int)name.size(), name.data());
+                    game::notify::Show("%.*s joined", (int)name.size(), name.data());
                     game::progress::OnPlayerJoined();
                     return r.Ok();
                 }
@@ -210,6 +216,7 @@ namespace coop::net {
                     ScopedLock lock;
                     if (Peer* p = FindPeer(r.Get<u8>())) {
                         Logging.Log("[coop] %s left", p->name);
+                        game::notify::Show("%s left", p->name);
                         p->present = false;
                     }
                     return true;

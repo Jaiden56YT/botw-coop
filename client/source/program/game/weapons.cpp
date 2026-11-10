@@ -10,6 +10,7 @@
 
 #include "../net/client.hpp"
 #include "ghost.hpp"
+#include "notify.hpp"
 #include "offsets.hpp"
 #include "player.hpp"
 
@@ -150,6 +151,7 @@ namespace coop::game::weapons {
                     if (dx * dx + dz * dz > 3.0f * 3.0f || dy * dy > 4.0f * 4.0f) continue;
                     net::SendGift(p.id, l.name);
                     Logging.Log("[coop] weapons: gave %s to %s", l.name, p.name);
+                    notify::Gift(false, p.name, l.name);
                     /* Ours is gone: it's theirs now. (Moving it away isn't enough:
                        its physics puts it back.) Never hand the same actor over twice. */
                     g_Given[g_GivenHead++ % 8] = l.actor;
@@ -380,6 +382,7 @@ namespace coop::game::weapons {
                 uintptr_t a = SpawnActor(gifts[i], at, rot);
                 g_Received[g_ReceivedHead++ % 16] = a;
                 Logging.Log("[coop] gifts: %s gave you %s%s", from[i], gifts[i], a ? "" : " (couldn't spawn it)");
+                if (a) notify::Gift(true, from[i], gifts[i]);
             }
         }
         if (g_TestActor) Update(g_TestBind, g_TestActor);

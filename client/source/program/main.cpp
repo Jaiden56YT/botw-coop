@@ -10,6 +10,7 @@
 #include "game/combat.hpp"
 #include "game/revive.hpp"
 #include "game/weapons.hpp"
+#include "game/notify.hpp"
 
 namespace {
 
@@ -45,6 +46,7 @@ namespace {
         coop::game::progress::Install();
         coop::game::combat::Init();
         coop::game::revive::Install();
+        coop::game::notify::Install();
         coop::game::weapons::Init();
         coop::net::Start(build_id);
         coop::net::SendLog("hello from Hyrule: botw-coop M0 is running in v1.9.0");

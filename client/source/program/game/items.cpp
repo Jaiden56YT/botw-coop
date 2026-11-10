@@ -6,6 +6,7 @@
 
 #include "../net/client.hpp"
 #include "gdt.hpp"
+#include "notify.hpp"
 #include "ghost.hpp"
 #include "offsets.hpp"
 #include "player.hpp"
@@ -66,6 +67,7 @@ namespace coop::game::items {
         int g_PrevCount = 0;
         bool g_HavePrev = false;
         u32 g_PrevArea = 0;
+        float g_PrevMe[3];
         s64 g_QuietUntil = 0;
 
         /* Items we dropped, until they're given away or picked up again. */
@@ -114,7 +116,12 @@ namespace coop::game::items {
                 return;
             }
             u32 area = LocalArea();
-            if (area != g_PrevArea) {
+            /* A new area, or a jump (fast travel or a warp to a partner, which
+               needn't change the area): everything around Link is new. */
+            float jx = me[0] - g_PrevMe[0], jz = me[2] - g_PrevMe[2];
+            bool jumped = g_HavePrev && jx * jx + jz * jz > 40.0f * 40.0f;
+            std::memcpy(g_PrevMe, me, sizeof(me));
+            if (area != g_PrevArea || jumped) {
                 g_PrevArea = area;
                 g_HavePrev = false;
                 for (auto& d : g_Dropped) d.actor = 0;
@@ -209,6 +216,7 @@ namespace coop::game::items {
                     near_any = true;
                     net::SendGift(p.id, d.name);
                     Logging.Log("[coop] items: gave %s to %s", d.name, p.name);
+                    notify::Gift(false, p.name, d.name);
                     uintptr_t vt = Read<uintptr_t>(d.actor);
                     reinterpret_cast<void (*)(uintptr_t, int)>(Read<uintptr_t>(vt + offsets::ActorVt_Kill))(d.actor, 0);
                     d.actor = 0;

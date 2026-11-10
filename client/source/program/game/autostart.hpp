@@ -17,9 +17,15 @@ namespace coop::game {
 
     /* Debug: presses a comma-separated button list once Link is in the world,
        one every 1.2 s ("A", "B", "X", "Y", "L", "R", "ZL", "ZR", "Plus", "Minus",
-       "Left", "Up", "Right", "Down"; "R:900" holds R for 900 ms). */
+       "Left", "Up", "Right", "Down", "LS"/"RS" for the stick clicks; "LS+RS" presses both; "R:900" holds R for 900 ms). */
     void SetKeyScript(const char* script);
     void KeyScriptTick(s64 now_ms);
+
+    /* How long the left stick click has been held (0 = not held). The game
+       only gets it as a tap on release, if it was held under 350 ms. */
+    s64 StickClickHeldMs();
+    /* How many short taps were passed on to the game (debug). */
+    u32 StickClickTaps();
 
     /* Test helper: holds the left stick at (x, y), each -32767..32767, for `ms`. */
     void HoldStick(s32 x, s32 y, int ms);

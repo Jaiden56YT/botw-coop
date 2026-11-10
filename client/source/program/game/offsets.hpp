@@ -155,4 +155,30 @@ namespace coop::game::offsets {
        and no modifier, loading the manager through this GOT slot. */
     constexpr uintptr_t PauseMenuDataMgr_ItemGet = 0xd921bc;
     constexpr uintptr_t Got_PauseMenuDataMgrInstance = 0x1d67af0;
+
+    /* On-screen info banner (the "The Master Sword has returned to the forest"
+       line). Found from the MainScreen_00 message table (0x1daa3b0: 0x31
+       SafeString labels; 0x21 = "0028", 0x2a = "0061", as in 1.6.0).
+       showInfo(idx) loads the empty string and falls into
+       showInfoWithString(idx, const SafeString*) (0xe7a790), which gets the
+       MainScreen (0xe7a240) and queues the message (0xda9df4). */
+    constexpr uintptr_t Ui_ShowInfo = 0xe7a780;
+    constexpr u32 UiInfo_A = 0x21, UiInfo_B = 0x2a;
+    /* int getMessage(const SafeString& file, const SafeString& label, MessageString* out):
+       0 = found. out = {const char16_t* text, u32 length}. */
+    constexpr uintptr_t Ui_GetMessage = 0xe84870;
+    /* GOT slot holding sead::SafeString's vtable symbol (+0x10 = the vtable), as 0xda9bcc loads it. */
+    constexpr uintptr_t Got_SafeStringVtable = 0x1d66260;
+
+    /* Link's Havok position: [[[main+0x1dbfdf0]+0xf0]+0xd28]+0x5e0 (Vec3f).
+       Same chain as 1.6.0's [[[main+0x2D37AF0]+0xF0]+0xD28]+0x5E0 (Bloom's
+       pointer for the botw-save-state practice mod); found by scanning 1.9.0's
+       globals for it. Writing it together with Link's matrix moves him. */
+    constexpr uintptr_t HavokPos_Global = 0x1dbfdf0;
+    constexpr uintptr_t HavokPos_A = 0xf0, HavokPos_B = 0xd28, HavokPos_Pos = 0x5e0;
+    /* Linear velocity, from the position (Vec3f; y sat at the -64 m/s fall cap
+       while Link was held in the air). */
+    constexpr uintptr_t HavokPos_ToVelocity = 0xb0;
+    /* Player: the height a fall started at (fall damage), 1.6.0 offset. */
+    constexpr uintptr_t Player_FallStartY = 0x20d0;
 }

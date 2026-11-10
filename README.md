@@ -25,6 +25,8 @@ Seamless co-op for *The Legend of Zelda: Breath of the Wild* on Ryujinx (Switch 
 - **The host's time of day and weather are shared.** Weather is only followed inside the same climate (no snow in the desert because the host is on a mountain). Checked: a guest under clear sky turned to the host's thunderstorm.
 - **Fights count for both.** Enemies placed in the world have the same id in every player's game. When one is hurt in your game, its new life is sent to the others, and their copy drops to the same life; at zero it dies there too, with its normal death and drops. Checked: a partner's kill of a Stone Talus removed it (and its five parts) from player 2's world. Enemies that aren't placed (random spawns) aren't shared.
 - **Co-op revive:** when a hit would kill you, the game's own revives (a fairy, Mipha's Grace) still come first. If you have none and a partner is with you (connected, same area), you get back up with 3 hearts instead of a game over, at most once every 2 minutes, and your partner's game is told. Checked with a real hit: at a quarter heart with fairies skipped, a Bokoblin's hit brought player 2 down, they got back up with 3 hearts, and the fake partner got the message.
+- **Warp to your partner:** hold the left stick click for 1.5 seconds and Link lands just behind your partner, if you're both in the overworld (or both in the same shrine). With several partners, each use goes to the next one. A quick tap of the stick still crouches as usual; only a long hold is kept from the game. Up to 250 m away it's instant; farther away Link travels in 250 m hops high above the ground (about 1 s per kilometre), because the game only loads the world around him if he moves in small steps. Hearts lost on the way (the cold up there) are given back. Checked: a 15 m warp, and a 4.2 km warp from Tabantha to the Great Plateau in 17 hops with full hearts on arrival.
+- **On-screen messages:** the game's own info banner (where "The Master Sword has returned to the forest" shows) tells you when a partner joins or leaves, what they gave you or you gave them, using the item's in-game name ("FakeA gave you Apple", "You gave Hearty Lizard x3 to FakeA"), revives, and warps.
 - Each player's hearts are sent with their position (for a future health display).
 - **Shared progress:**
   - What's shared: shrines found, activated and cleared (`Enter_`/`Open_`/`Clear_Dungeon*`), towers (`MapTower_*`), Divine Beasts (`Clear_Remains*`), and all 900 Koroks found (`MainField_Npc_HiddenKorok*`).
@@ -41,7 +43,6 @@ Up to four players can play together (the relay and the mod both handle it). Che
 Tested with a scripted fake partner (`tools/fakehost`) and with **two real games** on one Mac: both connected through the relay, each showed the other's puppet and map marker, the guest followed the host's time, a late joiner got 1,327 done flags, and when one game dropped off it reconnected by itself while the other took over as host.
 
 Not yet:
-- warp to partner: writing Link's position (his actor, physics and Havok copies) doesn't move him, no stage-change call with a free position has been found, and fast travel runs through the map screen's UI; see docs/reverse-engineering.md
 - enemies moving the same way in both games (only their life is shared): that needs taking over enemy AI
 - name tags and a health display
 - cutscene watch mode, fast-travel voting, trading cooked dishes
@@ -55,7 +56,7 @@ Not yet:
 | `client/` | In-game mod (C++, built on [exlaunch](https://github.com/shadowninja108/exlaunch)). Builds to `subsdk9`. |
 | `client/source/program/main.cpp` | Startup, version check, hook installation. |
 | `client/source/program/net/` | Network thread and wire protocol. |
-| `client/source/program/game/` | Game-side code: `offsets.hpp` (every 1.9.0 address and how it was found), `player` (local Link, area, hearts), `ghost` (remote players' puppets), `anim` (movement and action states), `gear` (worn armor), `map` (partner markers), `progress` (shared flags and rewards), `combat` (shared enemy life), `revive` (co-op revive), `weapons` and `items` (weapons on the puppet, trading), `world` (shared time and weather), `gdt` (game data flags), `autostart` (test helper). |
+| `client/source/program/game/` | Game-side code: `offsets.hpp` (every 1.9.0 address and how it was found), `player` (local Link, area, hearts), `ghost` (remote players' puppets), `anim` (movement and action states), `gear` (worn armor), `map` (partner markers), `progress` (shared flags and rewards), `combat` (shared enemy life), `revive` (co-op revive), `weapons` and `items` (weapons on the puppet, trading), `warp` (warp to a partner), `notify` (on-screen messages), `world` (shared time and weather), `gdt` (game data flags), `autostart` (test helper). |
 | `client/source/program/config.*` | Reads `config.ini`. |
 | `tools/` | Deploy script, fake host for testing, and reverse-engineering helpers. |
 
@@ -121,7 +122,7 @@ The file lives in the mod's RomFS folder because Ryujinx layers that into the ga
 | `test_move` | `false` | Debug: walks your Link forward and jumps, logging his animation sequences. |
 | `test_menu` | `false` | Debug: opens the inventory 2 s after a partner's reward, and the map 15 s after a partner's marker appears, so they can be checked without a controller. |
 | `test_bind` | empty | Debug: `Weapon:Bone` (e.g. `Weapon_Sword_070:Head`) spawns that weapon's actor and binds it to that bone of your Link. |
-| `test_keys` | empty | Debug: buttons pressed once in the world, 1.2 s apart, e.g. `Plus,Right,A:300` (`Button:ms` holds it). `SL`/`SR`/`SU`/`SD` push the left stick; any other word just waits (`W:3000`). |
+| `test_keys` | empty | Debug: buttons pressed once in the world, 1.2 s apart, e.g. `Plus,Right,A:300` (`Button:ms` holds it). `SL`/`SR`/`SU`/`SD` push the left stick, `LS`/`RS` click a stick, `A+B` presses both; any other word just waits (`W:3000`). |
 | `test_drop` | empty | Debug: an item (e.g. `Item_Fruit_A`) that appears at your feet 14 s after you're in the world, as if put down from the menu. |
 | `test_revive` | `false` | Debug: once a partner is with you, sets your life to 0 and runs the game's revive check (skipping fairies), to test co-op revive. |
 | `test_life` | `0` | Debug: once a partner is with you, drops your life to this many quarter hearts and skips fairies for the next lethal hit, to test co-op revive against a real enemy (pair with `test_spawn = Enemy_Bokoblin_Junior`). |
@@ -163,7 +164,7 @@ Set the game's `password = test`, and turn on `autostart` if nobody is at the co
 
 `tools/run-player2.sh` works for any test copy: `P_DIR=.ryujinx-p1 tools/run-player2.sh` starts a second one, so two test copies can play together without your own setup. Test copies are muted (`P2_SOUND=1` to hear one), and while one loads, every other running Ryujinx is paused.
 
-The fake host has options for each feature: `-shrine-at N` (walks into a shrine after N s), `-enemy HASH:LIFE` (reports a hit on a placed enemy), `-weather N -climate C` (hosts that weather), `-flags A,B` (shares progress flags), `-gear HEAD,UPPER,LOWER` (wears that armor), `-tour`, `-anims` and `-actions` (movement and action states), `-still` (stands still 6 m east of `-center`), `-time DEG` (start time; the clock then runs at game speed), `-bloody` (a Blood Moon tonight) and `-gift NAME` (gives every player that weapon or item after 15 s) and `-ride` (reports riding a horse). It logs what the game sends back (flags, enemy hits, revives).
+The fake host has options for each feature: `-shrine-at N` (walks into a shrine after N s), `-enemy HASH:LIFE` (reports a hit on a placed enemy), `-weather N -climate C` (hosts that weather), `-flags A,B` (shares progress flags), `-gear HEAD,UPPER,LOWER` (wears that armor), `-tour`, `-anims` and `-actions` (movement and action states), `-still` (stands still 6 m east of `-center`), `-time DEG` (start time; the clock then runs at game speed), `-bloody` (a Blood Moon tonight) and `-gift NAME` (gives every player that weapon or item 15 s after one is in the world) and `-ride` (reports riding a horse). It logs what the game sends back (flags, enemy hits, revives).
 
 To test with a different save than yours (for example a late-game save that has the map and inventory), give player 2 its own save folder. Use one with slots `0`–`7`, `option.sav`, and so on, as the game writes them. Your own save is never touched:
 

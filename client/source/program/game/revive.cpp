@@ -6,6 +6,7 @@
 #include <nn/os.hpp>
 
 #include "../net/client.hpp"
+#include "notify.hpp"
 #include "offsets.hpp"
 #include "player.hpp"
 
@@ -65,6 +66,10 @@ namespace coop::game::revive {
 
     void OnPartnerRevived(u8 player_id) {
         Logging.Log("[coop] revive: player %d went down and was revived by being near you", player_id);
+        net::Peer peers[net::MaxPeers];
+        net::GetPeers(peers);
+        for (auto& p : peers)
+            if (p.present && p.id == player_id) notify::Show("%s went down. You got them back up", p.name);
     }
 
     void Tick(s64 now) {
@@ -92,6 +97,7 @@ namespace coop::game::revive {
             Logging.Log("[coop] revive: you went down; your partner got you back up (3 hearts). Next one in %lld s",
                         CooldownMs / 1000);
             net::SendRevived();
+            notify::Show("Your partner got you back up");
         }
 
         /* Test: a real lethal hit. Low life, and fairies/Mipha's Grace skipped,

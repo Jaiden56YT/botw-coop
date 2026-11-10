@@ -158,6 +158,7 @@ Logged with `test_move` (which presses the buttons) and the `ASList_StartAnimati
 - The pause menu stops the clock: `WM_Time` doesn't change while it's open (our tick, driven by `getPlayerPos` callers, keeps running). In the System tab the clock runs. In play `WM_Time` also stands still for up to 2 s now and then, mostly in the first 10 s after a load, so the mod only counts a stop of 1.2 s or more, and ignores the first 10 s in an area.
 - A guest's time sync writes `WM_Time` while the menu is open (every 10 s, since the host's clock keeps going), which looks like the clock moved.
 - In the menu, the D-pad moves the cursor one slot; holding the left stick scrolls and speeds up; R/L switch between Adventure Log, Inventory and System. Moving right past a category's last column goes to the next category.
+- A jump in Link's position (a warp, or fast travel within the overworld, which doesn't change the area) is treated like a load: everything around the new spot is new, and right after the first warp three wild animals there (two lizards and a frog, all `Animal_Insect_*`) were taken for things Link had dropped and "given" to the partner. Item tracking now restarts, with the 10 s quiet time, after a move of more than 40 m between two scans (200 ms apart).
 
 ### Horses
 
@@ -186,14 +187,24 @@ Logged with `test_move` (which presses the buttons) and the `ASList_StartAnimati
   - It holds the weather for 4 frames, so guests call it every tick.
   - Checked: a guest's weather read 0 (clear), then 6 (thunderstorm) after the host's weather arrived, and the sky changed.
 
-### Moving Link (warp): what didn't work
+### Moving Link (warp)
 
-- A breadth-first scan from Link's actor, and from his physics (`Actor+0x578`, the `InstanceSet`), found about 60 copies of his position. The physics copies included Havok's own memory (`0x655f…`), reached through the character controller at `InstanceSet+0x80`.
-- **Raising any group of them, or all of them, by 30 m didn't move him.** The game rebuilds his position from state not found yet.
-- Second try: `DynStartPos` and `StartPosName` are AI and debug parameters, not a stage change with a free position. Fast travel goes through events and named warp points.
-- Fourth look: the travel location's reader (`0xdf8524`) also goes back through UI screens (`0xe833f0`).
-- Third try: fast travel from the map. The map screen (`0xdb155c`) sets `App_Map_WarpLocationName` (setter `0xd35870`, handle global `0x1da6938`), opens UI screen `0x3e` and steps it along. The warp itself happens later through the UI state machine and an event, so there's no single call to make.
-- Searching for `ksys::phys::RigidBody::setPosition` by its shape (three NaN self-compares, then a virtual tail call) found nothing. The OverwritePlayerPos strings (`0x111025c`) belong to a debug parameter list.
+- **What works:** Link's Havok position, `[[[main+0x1dbfdf0]+0xf0]+0xd28]+0x5e0` (Vec3f), written together with his actor matrix (`Actor+0x398`). This is the same chain as 1.6.0's `[[[main+0x2D37AF0]+0xF0]+0xD28]+0x5E0`, found by Bloom for the [botw-save-state](https://github.com/Pistonight/botw-save-state) practice mod; the struct offsets carried over, so a scan of 1.9.0's globals for a pointer leading there found the new global. Writing it moved Link 5 m, and he stayed.
+- Also written: `PlayerInfo+0x88` (its position copy), the fall-start height `Player+0x20d0` (read 374.27 standing at y 374.27, so the 1.6.0 offset holds; without it a warp down counts as a fall), and the Havok linear velocity at position `+0xb0`. Held in the air, Havok keeps adding fall speed (y sat at the -64 m/s cap), and Link landed with it: from 120 to about 20 life.
+- **Distance:** 15 m, 500 m and 1.5 km warps load in under a few seconds. While an area loads, the game holds Link perfectly still with the loading icon up; once he moves, it's loaded. At 4 km, and at 2 km in two 1 km hops, the area never loaded (30 s and more). The stage's load centre, `main+0x1e1289c` (set only when a stage loads, by `0xc5a478`, from `0xc465ac`), stayed at the start; forcing it to the new spot made the game stop holding Link, and he fell through ground that wasn't there. In 250 m hops, 4.2 km loaded hop after hop. The mod hops at y 1,100 (above every peak); up there the cold costs a little health, which the mod gives back.
+- Moving every other copy of the old position (311 of them, found by a memory scan) didn't help either.
+- Earlier, without the Havok chain: a breadth-first scan from Link's actor and his physics (`Actor+0x578`) found about 60 copies of his position, and raising them by 30 m didn't move him. `DynStartPos` and `StartPosName` are AI and debug parameters. Fast travel goes through the map screen (`0xdb155c` sets `App_Map_WarpLocationName`, setter `0xd35870`, then UI screen `0x3e`) and an event.
+
+### On-screen messages
+
+- The info banner: `0xe7a780(idx)` shows MainScreen_00 info message `idx` (it loads the empty string and falls into `0xe7a790(idx, const SafeString*)`, which gets the MainScreen from `0xe7a240` and queues the message with `0xda9df4`). The labels are a table of 0x31 SafeStrings at `0x1daa3b0`: index `0x21` is "0028" ("The Master Sword has returned to the forest"), `0x2a` is "0061", the same two the 1.6.0 practice mod borrows.
+- Text comes from `getMessage(const SafeString& file, const SafeString& label, out)` at `0xe84870` (0 = found; out = UTF-16 pointer and u32 length). Hooking it for `LayoutMsg/MainScreen_00` with those two labels, for 2 s after showing one, swaps in our text; the game's own messages are untouched.
+- Item names: `getMessage("ActorType/Item", "<Actor>_Name")` gives "Apple" for `Item_Fruit_A`. Weapons are in `ActorType/WeaponSmallSword`, `WeaponLargeSword`, `WeaponSpear`, `WeaponBow` and `WeaponShield`; insects and bee hives in `ActorType/CapturedActor`.
+- sead::SafeString's vtable: GOT slot `0x1d66260`, +0x10.
+
+### Controls the mod takes
+
+- Clicking the right stick opens the Scope, and D-pad Down whistles (calling the horse, with its own banner), so neither works as a co-op button. The mod keeps the left stick click from the game while it's held: released within 350 ms, it's passed on as a tap (Link crouches); held longer, it's the mod's.
 
 ### Module pitfalls
 

@@ -42,6 +42,16 @@ namespace coop::game {
         std::atomic<s32> g_StickX{0}, g_StickY{0};
         std::atomic<s64> g_StickUntil{0};
 
+        /* The left stick click is held back from the game while it's down: a
+           tap (shorter than TapMs) is passed on when it's released, so Link
+           still crouches; a long hold is ours (warp) and the game never sees it. */
+        constexpr u64 LStick = 1ull << 4;
+        constexpr s64 TapMs = 350;
+        std::atomic<int> g_LsFrom{-1};
+        std::atomic<s64> g_LsSince{0};
+        std::atomic<s64> g_LsTapUntil{0};
+        std::atomic<u32> g_LsTaps{0};
+
         s64 NowMs() { return nn::os::ConvertToTimeSpan(nn::os::GetSystemTick()).GetMilliSeconds(); }
 
         bool ShouldPressA() {
@@ -81,9 +91,29 @@ namespace coop::game {
                     g_PressMask.store(0);
                 }
             }
-            if (!ShouldPressA()) return;
-            g_Presses.fetch_add(1, std::memory_order_relaxed);
-            for (int i = 0; i < count; i++) out[i].buttons |= 1; /* A */
+            if (count > 0) {
+                s64 now = NowMs();
+                bool down = out[0].buttons & LStick;
+                int from = g_LsFrom.load(std::memory_order_relaxed);
+                if (down && from < 0) {
+                    g_LsSince.store(now);
+                    g_LsFrom.store(which);
+                } else if (from == which && !down) {
+                    if (now - g_LsSince.load() < TapMs) {
+                        g_LsTapUntil.store(now + 120);
+                        g_LsTaps.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    g_LsFrom.store(-1);
+                }
+                if (g_LsFrom.load(std::memory_order_relaxed) >= 0)
+                    for (int i = 0; i < count; i++) out[i].buttons &= ~LStick;
+                if (now < g_LsTapUntil.load(std::memory_order_relaxed))
+                    out[0].buttons |= LStick;
+            }
+            if (ShouldPressA()) {
+                g_Presses.fetch_add(1, std::memory_order_relaxed);
+                for (int i = 0; i < count; i++) out[i].buttons |= 1; /* A */
+            }
         }
     }
 
@@ -123,6 +153,13 @@ namespace coop::game {
                     g_HookCalls[0].load(), g_HookCalls[1].load(), g_HookCalls[2].load(), g_Presses.load());
     }
 
+    u32 StickClickTaps() { return g_LsTaps.load(std::memory_order_relaxed); }
+
+    s64 StickClickHeldMs() {
+        if (g_LsFrom.load(std::memory_order_relaxed) < 0) return 0;
+        return NowMs() - g_LsSince.load(std::memory_order_relaxed);
+    }
+
     void PressButtons(u64 mask, int ms) {
         g_PressUntil.store(NowMs() + ms);
         g_PressMask.store(mask);
@@ -147,7 +184,7 @@ namespace coop::game {
         u64 ButtonMask(const char* n) {
             struct { const char* name; int bit; } const map[] = {
                 {"A", 0}, {"B", 1}, {"X", 2}, {"Y", 3}, {"L", 6}, {"R", 7}, {"ZL", 8}, {"ZR", 9}, {"Plus", 10},
-                {"Minus", 11}, {"Left", 12}, {"Up", 13}, {"Right", 14}, {"Down", 15},
+                {"Minus", 11}, {"LS", 4}, {"RS", 5}, {"Left", 12}, {"Up", 13}, {"Right", 14}, {"Down", 15},
             };
             for (auto& m : map)
                 if (std::strcmp(m.name, n) == 0) return 1ull << m.bit;
@@ -178,7 +215,19 @@ namespace coop::game {
             *colon = '\0';
             ms = std::atoi(colon + 1);
         }
-        u64 mask = ButtonMask(token);
+        /* "LS+RS" presses both at once. */
+        u64 mask = 0;
+        bool all_known = true;
+        for (char* part = token; part && *part;) {
+            char* plus = std::strchr(part, '+');
+            if (plus) *plus = '\0';
+            u64 m = ButtonMask(part);
+            all_known &= m != 0;
+            mask |= m;
+            if (plus) *plus = '+';
+            part = plus ? plus + 1 : nullptr;
+        }
+        if (!all_known) mask = 0;
         if (mask) PressButtons(mask, ms);
         /* Left stick: SL/SR/SU/SD (left, right, up, down). Anything else just waits. */
         struct { const char* name; s32 x, y; } const sticks[] = {
@@ -190,7 +239,8 @@ namespace coop::game {
                 HoldStick(st.x, st.y, ms);
                 stick = true;
             }
-        Logging.Log("[coop] keys: %s (%d ms)%s", token, ms, mask || stick ? "" : " (wait)");
+        Logging.Log("[coop] keys: %s (%d ms)%s, stick taps passed on so far: %u", token, ms, mask || stick ? "" : " (wait)",
+                    StickClickTaps());
         g_KeyAt = now + ms + 1200;
     }
 }
