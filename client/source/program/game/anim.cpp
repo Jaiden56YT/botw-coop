@@ -88,6 +88,7 @@ namespace coop::game::anim {
             /* The rider's clips follow the horse's gait (see DriveHorse). */
             case Horse: return speed < 0.5f ? "Horse" : speed < 3.0f ? "HorseGear1" : speed < 7.0f ? "HorseGear2" : "HorseGear3";
             case Surf: return "Surf";
+            case Down: return "Down";
             default: return nullptr;
         }
     }

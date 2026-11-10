@@ -28,6 +28,7 @@ namespace coop::game::enemies {
         constexpr float SnapDist = 4.0f;   /* farther off than this: put it there at once */
         constexpr float SteerGain = 8.0f;      /* else move toward it at (distance x this) per second */
         constexpr float MaxSpeed = 12.0f;
+        constexpr float HeightSlack = 0.75f;
 
         /* ---- what partners send (network thread writes, game thread reads) ---- */
         struct Remote {
@@ -48,8 +49,10 @@ namespace coop::game::enemies {
             u32 hash;
             uintptr_t actor;
             uintptr_t body;   /* its Havok rigid body, 0 = not found yet */
+            float off[3];     /* body position minus actor position (big enemies: not zero) */
             s64 yield_until;  /* a lower-id partner owns it */
             s64 body_tried;
+            int tries;
         };
         constexpr int LocalSize = 128;
         Local g_Local[LocalSize];
@@ -57,8 +60,11 @@ namespace coop::game::enemies {
         u32 g_Area = 0;
         s64 g_NextSend = 0;
         s64 g_NextScanAt = 0;
+        int g_SendStart = 0;
         s64 g_LogAt = 0;
         int g_Steered = 0, g_Snapped = 0;
+        float g_ErrSum = 0, g_ErrMaxY = 0; /* how far copies were from their owners' (for the log) */
+        int g_ErrCount = 0;
 
         Local* FindLocal(u32 hash) {
             for (int i = 0; i < g_LocalCount; i++)
@@ -85,38 +91,67 @@ namespace coop::game::enemies {
 
         const float* BodyPos(uintptr_t body) { return reinterpret_cast<const float*>(body + offsets::HkBody_Pos); }
 
+        /* Link's own body: never an enemy's. */
+        uintptr_t LinkBody() {
+            uintptr_t g = Read<uintptr_t>(Base() + offsets::HavokPos_Global);
+            uintptr_t x = g ? Read<uintptr_t>(g + offsets::HavokPos_A) : 0;
+            uintptr_t y = x ? Read<uintptr_t>(x + offsets::HavokPos_B) : 0;
+            return y ? y + offsets::HavokPos_Pos - offsets::HkBody_Pos : 0;
+        }
+
         /* One pass over memory: for each enemy in `want` (no body yet), the
-           rigid body sitting at its position. Learned regions first; the
-           whole address space only when those find nothing. */
+           rigid body nearest its position. Only characters have a body of
+           this class (30 m around a camp held Link's and the Bokoblins',
+           nothing else), so the nearest free one within 2 m sideways and 3 m
+           in height is the enemy's own; the offset is kept for bigger enemies
+           whose body isn't at their feet. Learned regions first; the whole
+           address space only when those find nothing. */
+        constexpr float BodyNear = 2.0f, BodyNearY = 3.0f, ExactDist = 0.25f;
+        s64 g_LastFullScan = -100000;
         void FindBodies(Local** want, int n, s64 now) {
             if (n == 0) return;
             uintptr_t vt = Base() + offsets::HkRigidBody_Vtable;
-            int left = n;
+            uintptr_t link = LinkBody();
+            constexpr int MaxWant = 16;
+            if (n > MaxWant) n = MaxWant;
+            uintptr_t best[MaxWant] = {};
+            float best_d[MaxWant];
+            for (int i = 0; i < n; i++) best_d[i] = 1e9f;
+            int found = 0, exact = 0;
             auto scan = [&](uintptr_t start, uintptr_t end) {
-                for (uintptr_t a = (start + 15) & ~uintptr_t(15); a + 0x300 <= end && left > 0; a += 16) {
-                    if (Read<uintptr_t>(a) != vt) continue;
+                /* Stop early once every enemy has a body right at its position. */
+                for (uintptr_t a = (start + 15) & ~uintptr_t(15); a + 0x300 <= end && exact < n; a += 16) {
+                    if (Read<uintptr_t>(a) != vt || a == link) continue;
+                    bool taken = false;
+                    for (int k = 0; k < g_LocalCount && !taken; k++) taken = g_Local[k].body == a;
+                    if (taken) continue;
                     const float* p = BodyPos(a);
                     for (int i = 0; i < n; i++) {
-                        Local* l = want[i];
-                        if (l->body) continue;
-                        const float* m = reinterpret_cast<const float*>(l->actor + offsets::Actor_Mtx);
+                        const float* m = reinterpret_cast<const float*>(want[i]->actor + offsets::Actor_Mtx);
                         float dx = p[0] - m[3], dy = p[1] - m[7], dz = p[2] - m[11];
-                        if (!(dx * dx + dz * dz < 0.25f * 0.25f && dy * dy < 1.0f)) continue;
-                        l->body = a;
-                        left--;
-                        NoteRegion(a);
-                        break;
+                        float d = dx * dx + dz * dz;
+                        if (!(d < BodyNear * BodyNear && dy * dy < BodyNearY * BodyNearY)) continue;
+                        d += dy * dy;
+                        if (d < best_d[i]) {
+                            if (!best[i]) found++;
+                            if (d < ExactDist * ExactDist && best_d[i] >= ExactDist * ExactDist) exact++;
+                            best[i] = a;
+                            best_d[i] = d;
+                        }
                     }
                 }
             };
             s64 t0 = NowMs();
-            for (int r = 0; r < g_BodyRegionCount && left > 0; r++) scan(g_BodyRegions[r].start, g_BodyRegions[r].end);
+            for (int r = 0; r < g_BodyRegionCount; r++) scan(g_BodyRegions[r].start, g_BodyRegions[r].end);
             bool full = false;
-            if (left == n) {
-                /* Nothing from the known places: look everywhere once. */
+            /* Nothing from the known places: look everywhere, but a full pass
+               is slow (up to ~170 ms), so at most every 30 s once any body
+               has been found. */
+            if (found == 0 && (g_BodyRegionCount == 0 || now - g_LastFullScan > 30000)) {
+                g_LastFullScan = now;
                 full = true;
                 u64 addr = 0;
-                for (int guard = 0; guard < 4096 && left > 0; guard++) {
+                for (int guard = 0; guard < 4096 && exact < n; guard++) {
                     MemoryInfo mi{};
                     u32 page = 0;
                     if (R_FAILED(svcQueryMemory(&mi, &page, addr))) break;
@@ -127,16 +162,36 @@ namespace coop::game::enemies {
                     addr = next;
                 }
             }
-            for (int i = 0; i < n; i++) want[i]->body_tried = now;
-            Logging.Log("[coop] enemies: found %d of %d bodies in %lld ms%s", n - left, n, NowMs() - t0,
-                        full ? " (full scan)" : "");
+            /* Two enemies standing together can both be nearest to one body:
+               the closer one gets it, the other tries again next time. */
+            int got = 0;
+            for (int i = 0; i < n; i++) {
+                want[i]->body_tried = now;
+                if (!best[i]) continue;
+                bool lost = false;
+                for (int j = 0; j < n; j++)
+                    if (j != i && best[j] == best[i] && (best_d[j] < best_d[i] || (best_d[j] == best_d[i] && j < i))) lost = true;
+                if (lost) continue;
+                Local* l = want[i];
+                const float* p = BodyPos(best[i]);
+                const float* m = reinterpret_cast<const float*>(l->actor + offsets::Actor_Mtx);
+                l->body = best[i];
+                l->off[0] = p[0] - m[3], l->off[1] = p[1] - m[7], l->off[2] = p[2] - m[11];
+                NoteRegion(best[i]);
+                got++;
+                if (best_d[i] > 0.25f * 0.25f)
+                    Logging.Log("[coop] enemies: %08x's body is offset by (%.2f, %.2f, %.2f)", l->hash, l->off[0], l->off[1], l->off[2]);
+            }
+            /* Not found is normal for some (a sleeping Stone Talus has no such
+               body): ask less often. */
+            Logging.Log("[coop] enemies: found %d of %d bodies in %lld ms%s", got, n, NowMs() - t0, full ? " (full scan)" : "");
         }
 
         bool BodyOk(const Local& l) {
             if (!l.body || Read<uintptr_t>(l.body) != Base() + offsets::HkRigidBody_Vtable) return false;
             const float* p = BodyPos(l.body);
             const float* m = reinterpret_cast<const float*>(l.actor + offsets::Actor_Mtx);
-            float dx = p[0] - m[3], dz = p[2] - m[11];
+            float dx = p[0] - l.off[0] - m[3], dz = p[2] - l.off[2] - m[11];
             return dx * dx + dz * dz < 1.0f;
         }
 
@@ -145,31 +200,48 @@ namespace coop::game::enemies {
             float* p = reinterpret_cast<float*>(l.body + offsets::HkBody_Pos);
             float* v = reinterpret_cast<float*>(l.body + offsets::HkBody_Vel); /* zeroed on a snap */
             float* m = reinterpret_cast<float*>(l.actor + offsets::Actor_Mtx);
-            float dx = r.pos[0] - p[0], dy = r.pos[1] - p[1], dz = r.pos[2] - p[2];
+            /* Where the body should be: the owner's actor position plus our offset. */
+            float want[3] = {r.pos[0] + l.off[0], r.pos[1] + l.off[1], r.pos[2] + l.off[2]};
+            float dx = want[0] - p[0], dy = want[1] - p[1], dz = want[2] - p[2];
             float d = std::sqrt(dx * dx + dz * dz);
+            g_ErrSum += d;
+            g_ErrCount++;
+            if (std::fabs(dy) > g_ErrMaxY) g_ErrMaxY = std::fabs(dy);
             if (d > SnapDist || dy * dy > SnapDist * SnapDist) {
-                p[0] = r.pos[0], p[1] = r.pos[1], p[2] = r.pos[2];
+                p[0] = want[0], p[1] = want[1], p[2] = want[2];
                 m[3] = r.pos[0], m[7] = r.pos[1], m[11] = r.pos[2];
                 v[0] = v[1] = v[2] = 0;
                 g_Snapped++;
-            } else if (d > 0.02f) {
+            } else {
                 /* Setting its velocity does nothing (its AI drives it), but its
-                   position sticks: move it there, at most MaxSpeed. Horizontal
-                   only: gravity and the ground handle height. */
-                float step = d * SteerGain * dt;
-                if (step > MaxSpeed * dt) step = MaxSpeed * dt;
-                if (step > d) step = d;
-                p[0] += dx / d * step;
-                p[2] += dz / d * step;
-                m[3] = p[0], m[11] = p[2];
-                g_Steered++;
+                   position sticks: move it there, at most MaxSpeed. */
+                if (d > 0.02f) {
+                    float step = d * SteerGain * dt;
+                    if (step > MaxSpeed * dt) step = MaxSpeed * dt;
+                    if (step > d) step = d;
+                    p[0] += dx / d * step;
+                    p[2] += dz / d * step;
+                    m[3] = p[0] - l.off[0], m[11] = p[2] - l.off[2];
+                    g_Steered++;
+                }
+                /* Height is left to gravity and the ground while it's close
+                   (the same slope in both worlds). Past HeightSlack it's a
+                   jump or a flier: follow that too. */
+                if (dy > HeightSlack || dy < -HeightSlack) {
+                    float step = dy * SteerGain * dt;
+                    float cap = MaxSpeed * dt;
+                    if (step > cap) step = cap;
+                    if (step < -cap) step = -cap;
+                    p[1] += step;
+                    m[7] = p[1] - l.off[1];
+                    if (dy > 0 && v[1] < 0) v[1] = 0; /* don't fight a fall we're lifting it out of */
+                }
             }
             /* Facing: the actor's rotation (yaw only). */
             float c = std::cos(r.rot_y), sn = std::sin(r.rot_y);
             m[0] = c, m[1] = 0, m[2] = sn;
             m[4] = 0, m[5] = 1, m[6] = 0;
             m[8] = -sn, m[9] = 0, m[10] = c;
-            (void)dt;
         }
     }
 
@@ -245,10 +317,10 @@ namespace coop::game::enemies {
             Local* l = FindLocal(hash);
             if (!l && g_LocalCount < LocalSize) {
                 l = &g_Local[g_LocalCount++];
-                *l = {hash, a, 0, 0, 0};
+                *l = {hash, a, 0, {0, 0, 0}, 0, 0, 0};
             }
             if (!l) continue;
-            if (l->actor != a) *l = {hash, a, 0, 0, 0};
+            if (l->actor != a) *l = {hash, a, 0, {0, 0, 0}, 0, 0, 0};
             seen[l - g_Local] = true;
         }
         reinterpret_cast<CsFn>(Base() + offsets::CriticalSection_Unlock)(cs);
@@ -298,7 +370,11 @@ namespace coop::game::enemies {
         Local* need_body[16];
         int nneed = 0;
 
-        for (int i = 0; i < g_LocalCount; i++) {
+        /* More owned enemies than a message holds: start a bit further along
+           the list each time, so all of them get sent in turn. */
+        if (send && g_LocalCount > 0) g_SendStart = (g_SendStart + MaxPerMessage / 2) % g_LocalCount;
+        for (int n = 0; n < g_LocalCount; n++) {
+            int i = g_LocalCount ? (n + g_SendStart) % g_LocalCount : 0;
             Local& l = g_Local[i];
             const float* m = reinterpret_cast<const float*>(l.actor + offsets::Actor_Mtx);
             float mdx = m[3] - me[0], mdz = m[11] - me[2];
@@ -324,7 +400,11 @@ namespace coop::game::enemies {
                     l.yield_until = now + YieldMs;
                     if (!BodyOk(l)) {
                         l.body = 0;
-                        if (now - l.body_tried > 2000 && nneed < 16) need_body[nneed++] = &l;
+                        s64 wait = l.tries > 3 ? 10000 : 2000; /* some never have one (see FindBodies) */
+                        if (now - l.body_tried > wait && nneed < 16) {
+                            need_body[nneed++] = &l;
+                            if (l.tries < 100) l.tries++;
+                        }
                         continue;
                     }
                     Steer(l, r, dt);
@@ -345,10 +425,11 @@ namespace coop::game::enemies {
         if (send && nout) net::SendEnemyPoses(area, out, nout);
 
         if (now >= g_LogAt && (g_Steered || g_Snapped)) {
-            g_LogAt = now + 30000;
-            Logging.Log("[coop] enemies: %d tracked, following partners: %d steers, %d snaps in the last 30 s", g_LocalCount,
-                        g_Steered, g_Snapped);
-            g_Steered = g_Snapped = 0;
+            g_LogAt = now + 10000;
+            Logging.Log("[coop] enemies: %d tracked; following partners: %d moves, %d snaps, %.2f m off on average, height off by up to %.2f m",
+                        g_LocalCount, g_Steered, g_Snapped, g_ErrCount ? g_ErrSum / g_ErrCount : 0.0f, g_ErrMaxY);
+            g_Steered = g_Snapped = g_ErrCount = 0;
+            g_ErrSum = g_ErrMaxY = 0;
         }
     }
 }

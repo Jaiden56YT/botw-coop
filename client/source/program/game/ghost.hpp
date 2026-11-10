@@ -21,6 +21,12 @@ namespace coop::game {
     /* The local player's current anim::Category (from its own animation system). */
     u32 LocalAnimCategory();
 
+    /* Plays one of the local player's own body sequences ("Dead", "Wait"). Game thread. */
+    bool PlayLocalAS(const char* name);
+    /* While on, the game's own body sequences for the local player are dropped,
+       so the one started with PlayLocalAS stays. */
+    void HoldLocalPose(bool on);
+
     /* Called by the network thread once settings are loaded. */
     void ConfigureGhosts(const GhostSettings& settings);
 }

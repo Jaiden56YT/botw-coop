@@ -1,5 +1,6 @@
 #include "items.hpp"
 
+#include <atomic>
 #include <cstring>
 
 #include <lib.hpp>
@@ -42,6 +43,8 @@ namespace coop::game::items {
         float g_LastTime = -1;
         s64 g_TimeMovedAt = 0;
         s64 g_PausedAt = -100000; /* last moment we were in the menu */
+        std::atomic<bool> g_OurWrite{false};
+        s64 g_IgnoreUntil = 0;
 
         void WatchPause(s64 now) {
             if (!gdt::Ready()) return;
@@ -51,6 +54,10 @@ namespace coop::game::items {
             }
             float t;
             if (!gdt::GetF32(g_TimeH, &t)) return;
+            /* Our own time sync moved it (and the game may settle the new time
+               over a few frames); its clock may still be stopped. */
+            if (g_OurWrite.exchange(false)) g_IgnoreUntil = now + 700;
+            if (now < g_IgnoreUntil) g_LastTime = t;
             if (t == g_LastTime) {
                 if (now - g_TimeMovedAt >= MenuMinMs) g_PausedAt = now;
                 return;
@@ -242,6 +249,11 @@ namespace coop::game::items {
             uintptr_t a = SpawnActor(g_Test, at, rot);
             Logging.Log("[coop] items test: dropped %s: %p", g_Test, reinterpret_cast<void*>(a));
         }
+    }
+
+    void NoteClockWrite(float time) {
+        (void)time;
+        g_OurWrite.store(true);
     }
 
     bool InMenu(s64 now) { return now - g_PausedAt < 500; }

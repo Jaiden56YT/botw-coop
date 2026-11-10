@@ -156,7 +156,7 @@ Logged with `test_move` (which presses the buttons) and the `ASList_StartAnimati
 - The inventory's options for a material are only Hold and Cancel (Drop exists for weapons, bows and shields). Holding spawns the item actors as the menu closes, about 1.1 m above Link's feet in his hands. A puts them down or throws them; B puts them back in the bag (the actors go away).
 - A weapon dropped from the inventory is spawned by Link while the menu is still open.
 - The pause menu stops the clock: `WM_Time` doesn't change while it's open (our tick, driven by `getPlayerPos` callers, keeps running). In the System tab the clock runs. In play `WM_Time` also stands still for up to 2 s now and then, mostly in the first 10 s after a load, so the mod only counts a stop of 1.2 s or more, and ignores the first 10 s in an area.
-- A guest's time sync writes `WM_Time` while the menu is open (every 10 s, since the host's clock keeps going), which looks like the clock moved.
+- A guest's time sync writes `WM_Time` while the menu is open (every 10 s, since the host's clock keeps going), which looks like the clock moved. Between two real games that made a meal eaten just after it look like a heal outside the menu. The sync now tells the menu watcher, which ignores clock changes for 0.7 s after it.
 - In the menu, the D-pad moves the cursor one slot; holding the left stick scrolls and speeds up; R/L switch between Adventure Log, Inventory and System. Moving right past a category's last column goes to the next category.
 - A jump in Link's position (a warp, or fast travel within the overworld, which doesn't change the area) is treated like a load: everything around the new spot is new, and right after the first warp three wild animals there (two lizards and a frog, all `Animal_Insect_*`) were taken for things Link had dropped and "given" to the partner. Item tracking now restarts, with the 10 s quiet time, after a move of more than 40 m between two scans (200 ms apart).
 
@@ -166,6 +166,24 @@ Logged with `test_move` (which presses the buttons) and the `ASList_StartAnimati
 - Where the rider sits: `Model/Horse_Link.sbfres`'s skeleton has a `Saddle_Root` bone (parent `Spine_1`) at (0, 2.10, 0.05) m from the horse's origin in the rest pose. Link's riding clips (`Horse_Wait`, `Horse_Move_Gear_1`–`3`) keep his hips (`Skl_Root`) within 5 cm of his origin, so a mounted Link's position is the saddle point. The mod puts a rider's horse 2.10 m below and 0.05 m behind them. (Not measured on a real mount: a `GameRomHorse01` spawned on the plateau edge didn't appear.)
 - The `A_Pose_Horse_*` clips are partial poses; a puppet playing one alone stands upright.
 - `ASList::startAnimation` can return false for a sequence whose resources are still loading; asking again a few frames later works. The puppet keeps asking every 200 ms until it plays.
+
+### Starting sequences: what the call's result means (nothing)
+
+- `ASList::startAnimationMaybe` (`0x149f24c`) returns nothing useful. Read as a bool it was 0 for sequences that visibly played, on the puppet (`Wait` in 60 test runs, `Down`) and on the real Link (`DamageL`, `SitDownSt`), and 5 for one that showed nothing (`SwimDead`).
+- The puppet code used to ask again every 200 ms until the call said yes. For those sequences that restarted the clip five times a second: an idle that never got past its first frames, and a collapse that never fell. Now a sequence is started once when it changes; a puppet created less than 5 s ago is asked three more times, since a brand-new actor can ignore the call.
+
+### Link while down
+
+- Link's own state machine puts its sequence back within a frame when another one is started on his body slot (it re-requested `WaitAttention` right after ours). Dropping its requests for slots 0 and 1 in the `startAnimationMaybe` hook keeps ours; afterwards, starting `Wait` and letting requests through again brought him back, and he walked normally.
+- Of Link's sequences tried as a "down" pose: `Dead`, `DeadRagdoll` and `SwimDead` change nothing (they seem to need him really dying); `DamageL` and `LandDamage` are short crouches; `SitDownSt` sits him on the ground. The sit doesn't survive an enemy that keeps hitting him: hit reactions put him back on his feet by some other path.
+- On the puppet, the one-clip sequence `Nml_Die` plays Link's collapse and holds its last frame, lying on the ground.
+- The game's own callers pass `(-1, -1, name, slot, bank 0, true)`, the same as the mod.
+
+### Progress flags and other players' stories
+
+- `Clear_Remains{Water,Fire,Wind,Electric}` are single flags; nothing else named `Remains*` holds a beast's story (the rest are locations, small keys and the Fire beast's drone). The region's quest state lives in quest flags that aren't shared, so a clear flag alone gives a partner the ability and a "freed" beast in a world whose quest never ran. The mod applies it only to players inside the beast with the one who freed it.
+- The Great Plateau shrines hand out the runes (`IsGet_Obj_Magnetglove`, `IsGet_Obj_RemoteBomb*`, `IsGet_Obj_StopTimer`, `IsGet_Obj_IceMaker`), and the Old Man's quest follows their clear flags. `IsGet_PlayerStole2` (the paraglider) marks the end of that tutorial; no partner progress is applied before it.
+- Not guarded: `Clear_Dungeon120`-`136` (The Champions' Ballad shrines) are shared like any shrine, so a step of that quest can complete from a partner's clear.
 
 ### Blood Moon
 
@@ -200,6 +218,10 @@ Logged with `test_move` (which presses the buttons) and the `ASList_StartAnimati
 - Link's Havok position is inside an `hkpRigidBody`: its vtable is 0x1c0 before the position, at main+0x1b87b20, and the `hkpMotion` starts at body+0x150 (position at body+0x1c0, linear velocity at body+0x270). Enemies' bodies have the same vtable, and a Bokoblin's body sits exactly at its actor's position.
 - No pointer path from an actor, or from its physics (`Actor+0x578`), to its body turned up, 3 or 4 levels deep. The mod finds a body by scanning memory for the vtable at the actor's position: a full scan of the address space took 17-20 ms, and the regions where bodies turn up are remembered and scanned first.
 - Writing the body position (and the actor matrix) moved a Bokoblin 4 m, and it carried on from there. Writing its velocity did nothing: its AI sets that every frame. So the mod slides the body toward the owner's position each tick (at most 12 m/s, horizontal only) and snaps it when it's more than 4 m off.
+- **Only characters have a body of this class.** Every body with that vtable within 30 m of a Bokoblin camp was Link's or a Bokoblin's: no rocks, weapons or trees. So the nearest free body within 2 m of an enemy (3 m in height) is taken as its own, and the offset from the actor is kept for enemies whose body isn't at their feet.
+- **A sleeping Stone Talus has none.** `Enemy_Golem_Senior` (hash `132fec6f`, at (-2864.5, 409.0, -1825.9)) and its part actors (`Enemy_Golem_Upper_Arm_L`, hash 0) had no such body within 30 m while dormant. Not checked awake.
+- A full scan of the address space that can't stop early takes about 170 ms (stopping at the first exact match took 17-20 ms), so full scans are limited to one every 30 s once any body has been found; the remembered regions are scanned otherwise.
+- Height: a copy 5 m above or below its owner's is moved in height too (past 0.75 m of difference; less than that is left to the ground).
 - Warp detail found on the way: right after a placement, Link's position can read as the old spot for a tick, which looked like "he moved, so the area has loaded". The warp now judges a hop only once Link reads as being on it.
 
 ### Save files

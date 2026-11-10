@@ -88,6 +88,7 @@ namespace coop::game::research {
         constexpr uintptr_t BodyToVel = 0x270;      /* motion linear velocity (+0x120) */
 
         uintptr_t g_Enemy = 0, g_Body = 0;
+        float g_BodyRadius = 8.0f;
         float g_EnemyStart[3];
         s64 g_MoveAt = 0, g_LogUntil = 0, g_LogAt = 0;
         int g_Step = 0;
@@ -108,6 +109,7 @@ namespace coop::game::research {
                 node = Read<uintptr_t>(node + 8);
                 const char* n = Read<const char*>(a + offsets::BaseProc_NameStr);
                 if (!n || std::strncmp(n, "Enemy_", 6) != 0) continue;
+                if (Read<u32>(a + offsets::Actor_HashId) == 0) continue; /* parts and spawns */
                 const float* m = reinterpret_cast<const float*>(a + offsets::Actor_Mtx);
                 float dx = m[3] - me[0], dy = m[7] - me[1], dz = m[11] - me[2];
                 float d = dx * dx + dy * dy + dz * dz;
@@ -132,7 +134,7 @@ namespace coop::game::research {
                     if (Read<uintptr_t>(a) != vt) continue;
                     const float* p = reinterpret_cast<const float*>(a + BodyToPos);
                     float dx = p[0] - at[0], dy = p[1] - at[1], dz = p[2] - at[2];
-                    if (!(dx * dx + dy * dy + dz * dz <= 9.0f)) continue;
+                    if (!(dx * dx + dy * dy + dz * dz <= g_BodyRadius * g_BodyRadius)) continue;
                     Logging.Log("[coop] research: body %p at (%.2f %.2f %.2f), %.2f m from the actor", reinterpret_cast<void*>(a),
                                 p[0], p[1], p[2], std::sqrt(dx * dx + dy * dy + dz * dz));
                     out[n++] = a;
@@ -146,6 +148,7 @@ namespace coop::game::research {
                 float d;
                 g_Enemy = NearestEnemy(me, &d);
                 if (!g_Enemy || d > 40.0f) return; /* wait for the test enemy */
+                Logging.Log("[coop] research: hash %08x", Read<u32>(g_Enemy + offsets::Actor_HashId));
                 const float* m = reinterpret_cast<const float*>(g_Enemy + offsets::Actor_Mtx);
                 std::memcpy(g_EnemyStart, (float[3]){m[3], m[7], m[11]}, 12);
                 Logging.Log("[coop] research: nearest enemy %s at %.1f m (%.2f %.2f %.2f)",
@@ -154,6 +157,11 @@ namespace coop::game::research {
                 int n = FindBodies(g_EnemyStart, bodies, 16);
                 Logging.Log("[coop] research: %d bodies near it", n);
                 if (!n) {
+                    /* None at the actor: what is around, then? Every body within 30 m,
+                       and every enemy actor (with parts) near it. */
+                    g_BodyRadius = 30.0f;
+                    n = FindBodies(g_EnemyStart, bodies, 16);
+                    Logging.Log("[coop] research: %d bodies within 30 m", n);
                     g_Done = true;
                     return;
                 }

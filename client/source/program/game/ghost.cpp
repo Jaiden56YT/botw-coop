@@ -73,7 +73,7 @@ namespace coop::game {
             const char* anim;     /* animation sequence currently playing */
             s64 anim_retry_at;    /* when to ask again for one that failed to start */
             int anim_fails;
-            const char* anim_want;
+            s64 spawned_ms;       /* when the puppet actor was created */
             float speed, vspeed;  /* smoothed horizontal / vertical speed, m/s */
             s64 last_ms;
             bool hidden;          /* parked out of sight: the player is in another area */
@@ -265,21 +265,22 @@ namespace coop::game {
             else if (g.speed < 6.5f) want = "Run";
             else want = "Dash";
 
-            /* A sequence can fail to start while its animation is still loading:
-               keep asking until it plays. */
-            if (want != g.anim && now >= g.anim_retry_at) {
-                if (PlayAS(g.actor, want, 0)) {
-                    if (g.anim_fails > 0)
-                        Logging.Log("[coop] player %d: puppet plays '%s' after %d tries", g.peer_id, want, g.anim_fails + 1);
-                    g.anim = want;
-                    g.anim_fails = 0;
-                } else {
-                    if (g.anim_want != want) g.anim_fails = 0;
-                    g.anim_want = want;
-                    g.anim_retry_at = now + 200;
-                    if (++g.anim_fails == 50)
-                        Logging.Log("[coop] player %d: puppet still can't play '%s'", g.peer_id, want);
-                }
+            /* Start it once when it changes. The call's result says nothing
+               (it reported "no" for sequences that visibly played, 'Wait' and
+               'Down' among them), and asking again restarts the clip: a puppet
+               asked every 200 ms never got past a collapse's first frames.
+               A puppet that was only just created can still be setting up
+               and ignore the call, so in its first seconds it's asked a few
+               more times. */
+            if (want != g.anim) {
+                PlayAS(g.actor, want, 0);
+                g.anim = want;
+                g.anim_fails = 0;
+                g.anim_retry_at = now + 500;
+            } else if (g.anim_fails < 3 && now - g.spawned_ms < 5000 && now >= g.anim_retry_at) {
+                PlayAS(g.actor, want, 0);
+                g.anim_fails++;
+                g.anim_retry_at = now + 1000;
             }
         }
 
@@ -476,6 +477,7 @@ namespace coop::game {
             if (!g.actor) {
                 if (now < g.retry_after_ms) return;
                 g.actor = Spawn(target, target_rot);
+                g.spawned_ms = now;
                 if (!g.actor) {
                     g.retry_after_ms = now + 3000;
                     Logging.Log("[coop] couldn't spawn ghost actor '%s'", g_Settings.actor_name);
@@ -698,8 +700,20 @@ namespace coop::game {
 
     /* Sees every animation sequence the game starts. Used to learn which
        sequence the local player is in (debug logging for now). */
+    namespace {
+        std::atomic<bool> g_OwnAS{false};          /* we're starting a sequence on the local player ourselves */
+        std::atomic<bool> g_HoldPose{false};       /* keep the sequence we started: drop the game's own */
+    }
+
     HOOK_DEFINE_TRAMPOLINE(StartAnimationHook) {
         static void Callback(uintptr_t as_list, float a, float b, const SafeString& name, int target, int bank, bool flag) {
+            /* Lying down, waiting for a partner: Link's own state machine
+               keeps asking for its standing sequences (it noticed ours and
+               put WaitAttention back within a frame). Those are dropped
+               until he's up; body and upper body only. */
+            if (g_HoldPose.load(std::memory_order_relaxed) && target <= 1 && !g_OwnAS.load(std::memory_order_relaxed) &&
+                as_list == LocalPlayerASList())
+                return;
             Orig(as_list, a, b, name, target, bank, flag);
             if (!name.str || as_list != LocalPlayerASList()) return;
             if (target != 0 && g_LogPlayerAS.load(std::memory_order_relaxed))
@@ -725,8 +739,21 @@ namespace coop::game {
         }
     };
 
+    bool PlayLocalAS(const char* name) {
+        uintptr_t info = Read<uintptr_t>(Base() + offsets::PlayerInfoInstance);
+        uintptr_t actor = info ? Read<uintptr_t>(info + offsets::PlayerInfo_PlayerActor) : 0;
+        if (!actor) return false;
+        g_OwnAS.store(true);
+        bool ok = PlayAS(actor, name, 0);
+        g_OwnAS.store(false);
+        return ok;
+    }
+
+    void HoldLocalPose(bool on) { g_HoldPose.store(on); }
+
     u32 LocalAnimCategory() {
         u32 body = g_LocalAnim.load(std::memory_order_relaxed);
+        if (revive::IsDown()) return anim::Down;
         u32 action = NowMs() < g_LocalActionUntil.load(std::memory_order_relaxed) ? g_LocalAction.load(std::memory_order_relaxed) : 0;
         return body | (action << 8);
     }

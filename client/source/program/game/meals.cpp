@@ -158,9 +158,13 @@ namespace coop::game::meals {
 
         /* Our own meal: hearts went up while the menu is open. */
         s32 cur = *life;
-        if (g_LastLife >= 0 && cur > g_LastLife && items::InMenu(now)) {
-            g_Eaten += cur - g_LastLife;
-            g_EatenAt = now;
+        if (g_LastLife >= 0 && cur > g_LastLife) {
+            bool menu = items::InMenu(now);
+            Logging.Log("[coop] meals: hearts %d -> %d%s", g_LastLife, cur, menu ? " in the menu (a meal)" : "");
+            if (menu) {
+                g_Eaten += cur - g_LastLife;
+                g_EatenAt = now;
+            }
         }
         g_LastLife = cur;
         /* Send once a moment has passed (eating several dishes adds up). */

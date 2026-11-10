@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include <lib.hpp>
@@ -10,6 +12,7 @@
 
 #include "../net/client.hpp"
 #include "gdt.hpp"
+#include "notify.hpp"
 #include "offsets.hpp"
 #include "player.hpp"
 #include "autostart.hpp"
@@ -29,7 +32,7 @@ namespace coop::game::progress {
         struct Entry { u32 idx; u16 name; };
 
         /* Queued remote flag: list index + whether it was earned live (gives a reward). */
-        struct Pending { u16 name; bool live; };
+        struct Pending { u16 name; bool live; u8 from; };
         Entry g_Tables[2][MaxFlags];
         std::atomic<int> g_Live{-1};      /* which table the hook reads, -1 = none */
         std::atomic<int> g_LiveCount{0};
@@ -56,7 +59,13 @@ namespace coop::game::progress {
         /* The next world entry is a different save (or the same one reloaded):
            take its flags as they are instead of sharing the difference. */
         bool g_Fresh = true;
+        char g_GateFlag[64] = "IsGet_PlayerStole2"; /* the paraglider: the tutorial is over */
+        char g_BeastPrefix[64] = "Clear_Remains";
+        u8 g_Held[MaxFlags];
+        int g_HeldCount = 0;
+        bool g_BeastsAnywhere = false;
         char g_TestFlag[64];
+        s64 g_TestFlagAt = 0, g_TestFlagDelayMs = 0;
         bool g_TestDone = false;
         bool g_TestMenu = false;
         s64 g_OpenMenuAt = 0; /* test: open the pause menu to show rewards */
@@ -193,10 +202,10 @@ namespace coop::game::progress {
             item_get(mgr, name, 1, nullptr);
         }
 
-        void Queue(u16 name, bool live) {
+        void Queue(u16 name, bool live, u8 from) {
             nn::os::LockMutex(&g_Mutex);
             if (g_QCount < QueueSize) {
-                g_Queue[(g_QHead + g_QCount) % QueueSize] = {name, live};
+                g_Queue[(g_QHead + g_QCount) % QueueSize] = {name, live, from};
                 g_QCount++;
             }
             nn::os::UnlockMutex(&g_Mutex);
@@ -281,6 +290,11 @@ namespace coop::game::progress {
            game did it, to exercise the hook that shares local progress. */
         float pos[3];
         if (g_TestFlag[0] && !g_TestDone && net::IsConnected() && GetLocalPlayerPos(pos)) {
+            s64 now_ms = nn::os::ConvertToTimeSpan(nn::os::GetSystemTick()).GetMilliSeconds();
+            if (g_TestFlagAt == 0) g_TestFlagAt = now_ms + g_TestFlagDelayMs;
+        }
+        if (g_TestFlag[0] && !g_TestDone && g_TestFlagAt &&
+            nn::os::ConvertToTimeSpan(nn::os::GetSystemTick()).GetMilliSeconds() >= g_TestFlagAt && GetLocalPlayerPos(pos)) {
             g_TestDone = true;
             gdt::Handle h = gdt::BoolHandle(g_TestFlag);
             Logging.Log("[coop] progress: test-setting %s locally", g_TestFlag);
@@ -305,8 +319,62 @@ namespace coop::game::progress {
             g_QCount--;
         }
         nn::os::UnlockMutex(&g_Mutex);
+        /* Guard 1: nothing is applied during the Great Plateau tutorial (no
+           paraglider yet). Its four shrines hand out the runes; marking them
+           cleared from a partner's progress would let the Old Man's quest
+           move on without them. Held flags are applied once you have it. */
+        bool tutorial_done = false;
+        gdt::GetBool(gdt::BoolHandle(g_GateFlag), &tutorial_done);
+        if (!tutorial_done) {
+            int held = 0;
+            for (int i = 0; i < n; i++)
+                if (!g_Held[batch[i].name]) {
+                    g_Held[batch[i].name] = 1;
+                    g_HeldCount++;
+                    held++;
+                }
+            if (held) Logging.Log("[coop] progress: holding %d partner flags until %s (%d held)", held, g_GateFlag, g_HeldCount);
+            n = 0;
+        } else if (g_HeldCount > 0) {
+            /* Out of the tutorial: what was held comes in as catch-up (no rewards). */
+            int released = 0;
+            for (int i = 0; i < g_NameCount && n < 64; i++) {
+                if (!g_Held[i]) continue;
+                g_Held[i] = 0;
+                g_HeldCount--;
+                batch[n++] = {static_cast<u16>(i), false, 0xff};
+                released++;
+            }
+            Logging.Log("[coop] progress: applying %d held partner flags (%d to go)", released, g_HeldCount);
+        }
+        u32 my_area = LocalArea();
+        net::Peer peers[net::MaxPeers];
+        net::GetPeers(peers);
         for (int i = 0; i < n; i++) {
             u16 name = batch[i].name;
+            /* Guard 2: a Divine Beast only counts for players inside it with
+               whoever freed it. Its clear flag alone, without the region's
+               quest flags, leaves a world where the beast is "freed" but its
+               story never happened. */
+            if (!g_BeastsAnywhere && std::strncmp(g_Names[name], g_BeastPrefix, std::strlen(g_BeastPrefix)) == 0) {
+                bool together = false;
+                const char* who = "A partner";
+                for (auto& p : peers) {
+                    if (!p.present || p.id != batch[i].from) continue;
+                    who = p.name;
+                    together = batch[i].live && p.has_state && p.state.map_area == my_area && my_area != OverworldArea();
+                }
+                if (!together) {
+                    bool have = false;
+                    gdt::GetBool(gdt::BoolHandle(g_Names[name]), &have);
+                    if (!have && batch[i].live) {
+                        Logging.Log("[coop] progress: %s freed a Divine Beast (%s); not shared: you weren't inside with them", who,
+                                    g_Names[name]);
+                        notify::Show("%s freed a Divine Beast. Free it together to share it", who);
+                    }
+                    continue;
+                }
+            }
             gdt::Handle h = gdt::BoolHandle(g_Names[name]);
             bool v = false;
             if (h == gdt::InvalidHandle) continue;
@@ -320,7 +388,7 @@ namespace coop::game::progress {
             if (!now_set) {
                 /* Not accepted (e.g. mid-transition): try again next tick. */
                 g_Known[name].store(0);
-                Queue(name, batch[i].live);
+                Queue(name, batch[i].live, batch[i].from);
                 continue;
             }
             const char* reward = batch[i].live ? RewardFor(g_Names[name]) : nullptr;
@@ -351,10 +419,21 @@ namespace coop::game::progress {
         }
     }
 
-    void OnRemoteFlag(const char* name, size_t len, bool live) {
+    void OnRemoteFlag(u8 from, const char* name, size_t len, bool live) {
         int i = FindByName(name, len);
         if (i < 0) return; /* not a shared flag: ignore */
-        Queue(static_cast<u16>(i), live);
+        Queue(static_cast<u16>(i), live, from);
+    }
+
+    void SetBeastsAnywhere(bool on) { g_BeastsAnywhere = on; }
+    void SetTestGate(const char* flag) {
+        if (!flag || !flag[0]) return;
+        /* "Gate" or "Gate,BeastPrefix" (the second stands in for Clear_Remains). */
+        std::snprintf(g_GateFlag, sizeof(g_GateFlag), "%s", flag);
+        if (char* comma = std::strchr(g_GateFlag, ',')) {
+            *comma = '\0';
+            std::snprintf(g_BeastPrefix, sizeof(g_BeastPrefix), "%s", comma + 1);
+        }
     }
 
     void OnPlayerJoined() { g_SnapshotWanted.store(true); }
@@ -364,5 +443,10 @@ namespace coop::game::progress {
 
     void SetTestFlag(const char* name) {
         std::strncpy(g_TestFlag, name, sizeof(g_TestFlag) - 1);
+        /* "Flag:seconds" sets it that long after connecting. */
+        if (char* colon = std::strchr(g_TestFlag, ':')) {
+            *colon = '\0';
+            g_TestFlagDelayMs = std::atoi(colon + 1) * 1000;
+        }
     }
 }

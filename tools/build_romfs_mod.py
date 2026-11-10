@@ -79,6 +79,8 @@ ACTORS = [
             "Actor/AS/CoopPlayer_HorseGear2.bas": "Horse_Move_Gear_2",
             "Actor/AS/CoopPlayer_HorseGear3.bas": "Horse_Move_Gear_3",
             "Actor/AS/CoopPlayer_Surf.bas": "Shield_Board_Go2",
+            # Down, waiting for a partner (co-op revive): Link's collapse.
+            "Actor/AS/CoopPlayer_Down.bas": "Nml_Die",
             # Actions (attacks, bow, throw, guard), from the player's own clips.
             "Actor/AS/CoopPlayer_Attack1.bas": "Sword_Attack_S1",
             "Actor/AS/CoopPlayer_Attack2.bas": "Sword_Attack_S2",
@@ -113,6 +115,7 @@ ACTORS = [
             "HorseGear2": "CoopPlayer_HorseGear2",
             "HorseGear3": "CoopPlayer_HorseGear3",
             "Surf": "CoopPlayer_Surf",
+            "Down": "CoopPlayer_Down",
             "Attack1": "CoopPlayer_Attack1",
             "Attack2": "CoopPlayer_Attack2",
             "Attack3": "CoopPlayer_Attack3",

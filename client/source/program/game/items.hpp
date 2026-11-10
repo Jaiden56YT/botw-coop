@@ -17,6 +17,10 @@ namespace coop::game::items {
     /* Game thread, every tick. */
     void Tick(s64 now_ms);
 
+    /* The mod itself just set the clock (a guest following the host's time):
+       not the clock running. */
+    void NoteClockWrite(float time);
+
     /* The pause menu is open (the game's clock has stood still for 1.2 s or more). */
     bool InMenu(s64 now_ms);
 

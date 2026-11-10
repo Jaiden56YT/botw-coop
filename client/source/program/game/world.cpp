@@ -1,4 +1,5 @@
 #include "world.hpp"
+#include "items.hpp"
 
 #include <atomic>
 #include <cmath>
@@ -200,6 +201,7 @@ namespace coop::game {
         float diff = TimeDiff(want.time, have);
         if (std::fabs(diff) > 2.5f) {
             gdt::SetF32(g_TimeH, want.time);
+            items::NoteClockWrite(want.time);
             Logging.Log("[coop] world: synced time to host (%.1f -> %.1f, %02d:%02d)", have, want.time,
                         static_cast<int>(want.time / 15.0f), static_cast<int>(std::fmod(want.time, 15.0f) * 4.0f));
         }

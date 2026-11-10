@@ -12,3 +12,4 @@ client/build/
 tools/RomfsTool/obj/
 tools/RomfsTool/bin/
 client/romfs/
+.DS_Store

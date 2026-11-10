@@ -8,7 +8,7 @@ namespace coop::game::anim {
 
     enum Category : u32 {
         Unknown = 0,
-        Wait, Move, Climb, ClimbWait, Swim, SwimWait, SwimDash, Glide, Jump, Fall, Horse, Surf,
+        Wait, Move, Climb, ClimbWait, Swim, SwimWait, SwimDash, Glide, Jump, Fall, Horse, Surf, Down,
         Count,
     };
 

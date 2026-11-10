@@ -138,10 +138,12 @@ namespace coop::game::warp {
             return false;
         }
 
+        bool g_Announce = true; /* say "Warped to X" (not for the revive's respawn) */
+
         void Finish(bool ok) {
             g_Active = false;
             g_GuardUntil = NowMsLocal() + 3000;
-            if (ok) notify::Show("Warped to %s", g_TargetName);
+            if (ok && g_Announce) notify::Show("Warped to %s", g_TargetName);
         }
 
         void Step(s64 now) {
@@ -210,6 +212,8 @@ namespace coop::game::warp {
             Logging.Log("[coop] warp: hop %d to (%.0f, %.0f, %.0f)%s", g_Hops, g_Hop[0], g_Hop[1], g_Hop[2], last ? ", last" : "");
         }
 
+        bool Begin(const net::Peer& peer, const float* me, s64 now, bool announce);
+
         void TryWarp(s64 now) {
             float me[3], rot;
             if (!GetLocalPlayer(me, &rot)) return;
@@ -247,12 +251,18 @@ namespace coop::game::warp {
                     notify::Show("%s is outside: leave first", elsewhere->name);
                 return;
             }
+            Begin(*pick, me, now, true);
+        }
+
+        bool Begin(const net::Peer& peer, const float* me, s64 now, bool announce) {
+            const net::Peer* pick = &peer;
+            g_Announce = announce;
             g_LastTarget = g_TargetId = pick->id;
             std::memcpy(g_TargetName, pick->name, sizeof(g_TargetName));
             float to[3];
-            if (!TargetSpot(to)) return;
+            if (!TargetSpot(to)) return false;
             bool last = NextHop(me, to, g_Hop);
-            if (!Place(g_Hop)) return;
+            if (!Place(g_Hop)) return false;
             g_Active = true;
             g_LoadedAt = 0;
             g_Retries = 0;
@@ -264,11 +274,33 @@ namespace coop::game::warp {
             float dist = std::sqrt(dx * dx + dz * dz);
             Logging.Log("[coop] warp: to %s at (%.1f, %.1f, %.1f), %.0f m from (%.1f, %.1f, %.1f)%s", pick->name, to[0], to[1],
                         to[2], dist, me[0], me[1], me[2], last ? "" : ", in hops");
-            if (!last) notify::Show("Warping to %s (%.1f km)...", pick->name, dist / 1000.0f);
+            if (!last && announce) notify::Show("Warping to %s (%.1f km)...", pick->name, dist / 1000.0f);
+            return true;
         }
     }
 
     bool PlaceLink(const float (&pos)[3]) { return Place(pos); }
+
+    void HoldLinkXZ(const float (&pos)[3]) {
+        float* hk = HavokPos();
+        uintptr_t actor = PlayerActor();
+        if (!hk || !actor) return;
+        hk[0] = pos[0], hk[2] = pos[2];
+        float* vel = hk + offsets::HavokPos_ToVelocity / 4;
+        vel[0] = vel[2] = 0;
+        float* m = reinterpret_cast<float*>(actor + offsets::Actor_Mtx);
+        m[3] = pos[0], m[11] = pos[2];
+    }
+
+    bool GoToPartner(u8 id, s64 now) {
+        float me[3];
+        if (g_Active || !GetLocalPlayerPos(me)) return false;
+        net::Peer peers[net::MaxPeers];
+        net::GetPeers(peers);
+        for (auto& p : peers)
+            if (p.present && p.id == id && p.has_state && p.state.map_area == LocalArea()) return Begin(p, me, now, false);
+        return false;
+    }
 
     void Tick(s64 now) {
         if (g_Active) Step(now);

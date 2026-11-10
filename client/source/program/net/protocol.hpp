@@ -11,7 +11,8 @@
 
 namespace coop::net {
 
-    constexpr u16 ProtocolVersion = 1;
+    /* 2: Heal, Downed and EnemyPos messages; going down replaced the instant revive. */
+    constexpr u16 ProtocolVersion = 2;
     constexpr u32 MaxMessageSize = 64 * 1024;
     constexpr u32 HeaderSize = 4; /* type + flags */
 

@@ -17,7 +17,13 @@ namespace coop::game::progress {
 
     /* Network thread: another player set a flag. `live` = they just earned it
        (gives you the reward too); false = catch-up for a late joiner. */
-    void OnRemoteFlag(const char* name, size_t len, bool live);
+    void OnRemoteFlag(u8 from, const char* name, size_t len, bool live);
+
+    /* Share Divine Beast clears with partners anywhere (default: only with
+       partners inside the beast with you; see the guards in Tick). */
+    void SetBeastsAnywhere(bool on);
+    /* Debug: use this flag instead of the paraglider as "the tutorial is over". */
+    void SetTestGate(const char* flag);
 
     /* Network thread: someone joined; send them everything we've done. */
     void OnPlayerJoined(); /* also called when we join a room that already has players */

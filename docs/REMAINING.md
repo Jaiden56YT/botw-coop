@@ -1,6 +1,6 @@
 # What's left to do
 
-Everything that isn't finished yet, as of commit `4aa4de3`. It covers features from the design that don't exist, features that exist but haven't been checked properly, known bugs and rough edges, and the work needed to hand this to other players.
+Everything that isn't finished yet. Items finished since the first version of this list are marked **Done**, with what was checked; they stay here so the numbering in older notes still works. It covers features from the design that don't exist, features that exist but haven't been checked properly, known bugs and rough edges, and the work needed to hand this to other players.
 
 **Size** is a rough guess:
 - **S** is an afternoon.
@@ -41,8 +41,8 @@ Several features were only tested against `tools/fakehost` (a scripted fake part
 
 | Feature | What was checked | What still needs checking |
 |---|---|---|
-| Shared meals | A fake partner's meals healed player 2, and player 2's meal reached the fake partner. | Two real games eating next to each other. Eating several dishes quickly. Hearty dishes (yellow hearts) when the partner is at full health. Elixirs. |
-| Downed state | A fake partner walked over and got player 2 up, or stayed away until the time ran out. | A real partner walking over. Warping to a downed partner. Both players going down at once. Going down in water, mid-air, while gliding or in lava, where pinning Link in place might look wrong or kill him anyway. Going down inside a shrine. |
+| Shared meals | A fake partner's meals healed player 2, and player 2's meal reached the fake partner. **Two real games: player 1 ate a 5-heart dish, player 2 went from 5 to 10 hearts** (after fixing the guest's time sync, which made the meal look like a heal outside the menu). | Eating several dishes quickly. Hearty dishes (yellow hearts) when the partner is at full health. Elixirs. |
+| Downed state | A fake partner walked over and got player 2 up, or stayed away until the time ran out. **Two real games: a partner standing by got player 2 up, and so did a partner who warped over.** | Both players going down at once. Going down in water, mid-air, while gliding or in lava (you're now only held sideways, so you drop or float; not tried). Going down inside a shrine. |
 | Low-hearts warning | A fake partner whose hearts drop. | Real games. Also, it shouldn't fire on a fresh save with 3 hearts, or after a heart-container upgrade. |
 | Travel banners | A fake partner jumping 1.5 km and walking into a shrine. | Real fast travel, which goes through a loading screen. Real shrine entry and exit. Divine Beasts. Hyrule Castle. Stalling on the loading screen shouldn't trigger false banners. |
 | Separate co-op saves | Test copies with a 100% save: the first copy, a save from the menu, the second launch and the backup. | **Your own real save and profile.** A fresh save with no slots. Several Ryujinx user profiles. Master Mode saves (`tracker/trackblock_hard*`). Autosaves in many slots. What happens if the game is killed during the first copy. |
@@ -93,8 +93,10 @@ The design wants config settings for enemy health, enemy damage and stun time. F
 
 ## 3. Death and revival
 
-### 3.1 A real "down" look (P2, M)
-**Today:** a downed player just stands still, held in place.
+### 3.1 A real "down" look (P2, M) — partly done
+**Done:** partners see the downed player's puppet collapse and lie on the ground (`Nml_Die`), and the downed player's buttons and left stick are off.
+**Still wrong:** your own Link is told to sit down (`SitDownSt`), but an enemy that keeps hitting him keeps him standing. And enemies do keep hitting a downed player, which looks bad even though it can't kill. Wanted: enemies lose interest in a downed player (find how the game hides Link from enemy senses, e.g. the stealth or "no target" state used in cutscenes).
+**Before:** a downed player just stood still, held in place.
 **Wanted:** Link on the ground or crawling, and the puppet showing that too.
 **How:** play one of Link's own lying-down or damaged sequences while down (look through `Player_Animation.sbfres` for a suitable clip), and send a "down" movement state so the puppet plays it as well.
 
@@ -103,8 +105,10 @@ The design wants config settings for enemy health, enemy damage and stun time. F
 **Design:** hold **A** next to them for 3 s.
 **How:** the input hook already sees every button. Note that A next to a downed partner might also pick something up or open something.
 
-### 3.3 What happens when nobody comes (P2, M)
-**Today:** you're released on a quarter heart, and the next hit is a normal game over, which reloads your save and drops you out of the shared state.
+### 3.3 What happens when nobody comes (P2, M) — mostly done
+**Done:** when the 30 s run out you come to beside the nearest partner in your area with 1 heart (checked with a fake partner 16 m away). With no partner in the area you're released on a quarter heart as before.
+**Left:** no stamina penalty (the stamina address isn't known in 1.9.0); both players down at once isn't handled specially (each respawns beside the other); a game over can still happen once you're released alone.
+**Before:** you were released on a quarter heart, and the next hit was a normal game over, which reloads your save and drops you out of the shared state.
 **Design:**
 - Respawn next to your partner instead, weakened (less stamina for 60 s).
 - If **both** players are down, the whole party respawns at the host's last safe spot, without reloading from disk.
@@ -211,7 +215,9 @@ The puppet shows movement, attacks, the bow, throws and the shield. It doesn't s
 - Memory flags: `Photo_*` / `MemoryN` names in `gamedata-flags.json`.
 - Compendium entries: `IsGet_*` / picture book.
 
-### 6.4 Check the shared-flag list for "flag bleed" (P1, S)
+### 6.4 Check the shared-flag list for "flag bleed" (P1, S) — done
+**Done:** two guards in `progress.cpp`, both checked with stand-in flags. Nothing is applied before the paraglider (the plateau shrines hand out the runes), and a Divine Beast clear only counts for players inside the beast with whoever freed it (`beasts_anywhere = true` turns that off). See "Progress flags and other players' stories" in the reverse-engineering notes.
+**Left:** the Champions' Ballad shrines (`Clear_Dungeon120`-`136`) are shared like any shrine, so a step of that quest can complete from a partner's clear. Shrine quests in general complete the same way; that's the design, but nobody has played through one to see how it reads.
 **Background:** Yui's mod broke quests by sharing the wrong world flags.
 **Today:** the list is shrines, towers, Divine Beasts and Koroks (`progress.cpp`).
 **Check:**
@@ -321,7 +327,8 @@ Then send the choices to everyone when they join.
 
 ## 11. Networking
 
-### 11.1 Protocol version and old clients (P2, S)
+### 11.1 Protocol version and old clients (P2, S) — done
+**Done:** the protocol is version 2 in the mod, the relay and the fake partner. The relay refuses a different version, and the mod shows why on screen once ("Co-op is off: your mod and the server are different versions").
 New message types (Heal, Downed, EnemyPos) were added. A partner on an older build ignores them silently, and the `Revived` message changed meaning (older builds expect an instant revive).
 **How:** bump the protocol version, so the relay refuses mismatched builds with a clear message. The `Hello` message has a version field.
 
@@ -373,9 +380,11 @@ Compile these out of normal builds:
 
 | Problem | Where | Priority |
 |---|---|---|
-| A downed player is held in place even mid-air or in water. | `revive.cpp` | P2 |
-| Enemy copies only move sideways. Height comes from their own physics, so a jumping or flying enemy can be off in height. | `enemies.cpp` | P2 |
-| The enemy body search needs the body within 0.25 m of the actor's position. Enemies with an offset body (big ones) won't be found and won't sync. | `enemies.cpp` | P2 |
+| **Fixed (not tried in the air or water):** a downed player is now only held sideways, so they drop or float. | `revive.cpp` | P2 |
+| **Fixed for a 5 m test offset; no real flier tried:** enemy copies now follow height too when it differs by more than 0.75 m. | `enemies.cpp` | P2 |
+| **Partly fixed:** the body search takes the nearest free body within 2 m (3 m in height) and keeps the offset. But a sleeping Stone Talus has no body of this kind at all, so big enemies may need another way; none has been tried awake. | `enemies.cpp` | P2 |
+| Enemies keep attacking a downed player, and the hits keep the player's own Link standing instead of sitting (see 3.1). | `revive.cpp` | P2 |
+| Worn-armor and horse actors on the puppet still trust the animation call's result (see "Starting sequences" in the reverse-engineering notes); the body no longer does. If their clips ever look stuck at the first frames, that's why. | `ghost.cpp` | P3 |
 | The warp's "area loaded" check is "Link moved". If Link is placed exactly on the ground and nothing moves him, the last hop waits for its 30 s timeout before saying "Warped". | `warp.cpp` | P3 |
 | Holding L3 is taken by the mod for warping. A tap still crouches, but anyone who holds L3 to crouch-walk will warp by accident (only when a partner is around). | `autostart.cpp`, `warp.cpp` | P3 |
 | Banners share one slot. If several events happen together, they queue 3.5 s apart, and the game's own info messages in that slot can be replaced. | `notify.cpp` | P3 |
@@ -416,10 +425,10 @@ Compile these out of normal builds:
 
 ## 15. Suggested order
 
-1. **Check what's built with two real games** (section 1). Start with the downed state, shared meals and enemy sync, and include separate saves on your own profile (9.1).
-2. **Protocol version bump** (11.1) and the **flag bleed review** (6.4): both small, and both prevent confusing failures.
-3. **Enemy sync for big and flying enemies**, and height (13), so all fights work, not only Bokoblin camps.
-4. **A real down look and respawn next to your partner** (3.1, 3.3), which finishes the death loop.
+1. **Check what's built with two real games** (section 1). Done for the downed state and shared meals; still open: separate saves on your own profile (9.1), real fast travel and shrines, play over the internet.
+2. Done: the protocol version bump (11.1) and the flag review (6.4).
+3. **Enemy sync for big and flying enemies** (13): height and offset bodies are in; real fliers and big enemies awake still need trying.
+4. **The death loop** (3.1, 3.3): the puppet's collapse and the respawn beside a partner are in; making enemies leave a downed player alone is the open part.
 5. **Your own horse** (8.1) and **weapon bonuses in trades** (7.3): visible, contained work.
 6. **Handing over cooked dishes and food effects** (7.1, 7.2).
 7. **Travel together** and **warp across areas** (5.1, 5.2): need reverse-engineering first.

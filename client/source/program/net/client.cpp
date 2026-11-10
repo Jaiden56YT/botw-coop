@@ -67,6 +67,7 @@ namespace coop::net {
 
         bool g_RevivedPending = false;
         u32 g_HealPending = 0;
+        bool g_RejectShown = false;
         struct DownedOut { u8 state; float pos[3]; u8 left; };
         DownedOut g_DownedOut[4];
         int g_DownedOutCount = 0;
@@ -210,6 +211,11 @@ namespace coop::net {
                 case MsgType::Reject: {
                     auto reason = r.Str();
                     Logging.Log("[coop] server refused: %.*s", (int)reason.size(), reason.data());
+                    /* Say it on screen once (we keep retrying, e.g. until both sides update). */
+                    if (!g_RejectShown) {
+                        g_RejectShown = true;
+                        game::notify::Show("Co-op is off: %.*s", (int)reason.size(), reason.data());
+                    }
                     return false;
                 }
                 case MsgType::PlayerJoined: {
@@ -272,12 +278,12 @@ namespace coop::net {
                     return true;
                 }
                 case MsgType::Flag: {
-                    r.Get<u8>(); /* sender id */
+                    u8 from = r.Get<u8>();
                     u8 value = r.Get<u8>();
                     auto name = r.Str();
                     if (!r.Ok()) return false;
                     /* value: 1 = earned just now, 2 = catch-up for a new player */
-                    if (value) game::progress::OnRemoteFlag(name.data(), name.size(), value == 1);
+                    if (value) game::progress::OnRemoteFlag(from, name.data(), name.size(), value == 1);
                     return true;
                 }
                 case MsgType::EnemyLife: {
@@ -706,6 +712,8 @@ namespace coop::net {
                 game::ConfigureGhosts(gs);
                 game::EnableAutostart(g_Config.autostart);
                 if (g_Config.test_flag[0]) game::progress::SetTestFlag(g_Config.test_flag);
+                game::progress::SetBeastsAnywhere(g_Config.beasts_anywhere);
+                game::progress::SetTestGate(g_Config.test_gate);
                 if (g_Config.test_menu) game::progress::SetTestMenu(true);
                 game::combat::SetLogNearby(g_Config.autostart);
                 game::revive::SetTest(g_Config.test_revive);

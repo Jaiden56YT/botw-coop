@@ -125,9 +125,9 @@ func TestRejections(t *testing.T) {
 	host.expect(MsgWelcome)
 
 	cases := map[string]HelloPayload{
-		"protocol": {Protocol: 99, BuildID: build, Name: "A", Password: "pw"},
-		"version":  {Protocol: ProtocolVersion, BuildID: [16]byte{1}, Name: "B", Password: "pw"},
-		"name":     hello("Link", "pw"),
+		"different versions": {Protocol: 99, BuildID: build, Name: "A", Password: "pw"},
+		"version":            {Protocol: ProtocolVersion, BuildID: [16]byte{1}, Name: "B", Password: "pw"},
+		"name":               hello("Link", "pw"),
 	}
 	for want, h := range cases {
 		c := dial(t, addr, h)

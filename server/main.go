@@ -120,7 +120,7 @@ func (s *Server) handle(conn net.Conn) {
 
 func (s *Server) join(c *Client, h HelloPayload) string {
 	if h.Protocol != ProtocolVersion {
-		return fmt.Sprintf("protocol mismatch: server %d, you %d; update the mod", ProtocolVersion, h.Protocol)
+		return fmt.Sprintf("your mod and the server are different versions (server %d, you %d); update both", ProtocolVersion, h.Protocol)
 	}
 	if h.Name == "" {
 		return "empty player name"

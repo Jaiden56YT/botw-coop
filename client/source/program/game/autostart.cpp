@@ -8,6 +8,7 @@
 #include <nn/os.hpp>
 
 #include "player.hpp"
+#include "revive.hpp"
 
 namespace nn::hid {
     /* Every Npad*State has this layout. */
@@ -110,6 +111,12 @@ namespace coop::game {
                 if (now < g_LsTapUntil.load(std::memory_order_relaxed))
                     out[0].buttons |= LStick;
             }
+            /* Down, waiting for a partner: Link doesn't act (the camera still turns). */
+            if (revive::IsDown())
+                for (int i = 0; i < count; i++) {
+                    out[i].buttons = 0;
+                    out[i].stick_l[0] = out[i].stick_l[1] = 0;
+                }
             if (ShouldPressA()) {
                 g_Presses.fetch_add(1, std::memory_order_relaxed);
                 for (int i = 0; i < count; i++) out[i].buttons |= 1; /* A */

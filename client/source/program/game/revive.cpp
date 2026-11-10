@@ -9,6 +9,7 @@
 #include <nn/os.hpp>
 
 #include "../net/client.hpp"
+#include "ghost.hpp"
 #include "notify.hpp"
 #include "offsets.hpp"
 #include "player.hpp"
@@ -19,6 +20,12 @@ namespace coop::game::revive {
     namespace {
         constexpr s32 ReviveLife = 12;      /* 3 hearts, in quarter hearts */
         constexpr s32 DownLife = 1;         /* a quarter heart while down */
+        constexpr s32 RespawnLife = 4;      /* one heart when nobody came and you wake beside a partner */
+        /* Link's own sequence shown while down: he sits down on the ground.
+           Tried on screen: "Dead", "DeadRagdoll" and "SwimDead" change nothing
+           (they depend on him really dying), "DamageL" and "LandDamage" are
+           short crouches. Partners see the puppet collapse (Nml_Die). */
+        constexpr const char* DownSequence = "SitDownSt";
         constexpr s64 DownMs = 30000;       /* how long a partner has to reach you */
         constexpr float ReachDist = 2.5f;   /* a partner this close... */
         constexpr s64 ReachMs = 1500;       /* ...for this long gets you up */
@@ -49,6 +56,8 @@ namespace coop::game::revive {
         float g_DownAt[3];
         s64 g_ReachSince = 0;
         s64 g_NextSend = 0;
+        s64 g_PoseAt = 0; /* when to (re)start the sitting sequence */
+        int g_PoseTries = 0;
 
         bool g_Test = false;
         int g_TestLife = 0;       /* test: drop to this life, then let a real hit bring Link down */
@@ -81,7 +90,17 @@ namespace coop::game::revive {
         }
     };
 
+    namespace {
+        void GetUp() {
+            g_PoseAt = 0;
+            HoldLocalPose(false);
+            PlayLocalAS("Wait");
+        }
+    }
+
     void Install() { TryReviveHook::InstallAtOffset(offsets::Player_TryRevive); }
+
+    bool IsDown() { return g_Down.load(std::memory_order_relaxed); }
 
     void SetTest(bool on) { g_Test = on; }
     void SetTestLife(int life) { g_TestLife = life; }
@@ -105,7 +124,8 @@ namespace coop::game::revive {
                 float dx = pos[0] - me[0], dz = pos[2] - me[2];
                 float d = std::sqrt(dx * dx + dz * dz);
                 if (d >= 1000.0f) std::snprintf(where, sizeof(where), ", %.1f km away", d / 1000.0f);
-                else std::snprintf(where, sizeof(where), ", %.0f m away", d);
+                else if (d >= 5.0f) std::snprintf(where, sizeof(where), ", %.0f m away", d);
+                else std::snprintf(where, sizeof(where), " right next to you");
             }
             Logging.Log("[coop] revive: %s is down at (%.1f, %.1f, %.1f), %u s left", name, pos[0], pos[1], pos[2], seconds);
             notify::Show("%s is down%s! Reach them within %u s", name, where, seconds);
@@ -123,6 +143,11 @@ namespace coop::game::revive {
         float me[3];
         if (!GetLocalPlayerPos(me)) {
             g_PartnerHere.store(false);
+            /* Left the world while down (a load, the title screen): it's over. */
+            if (g_Down.exchange(false)) {
+                g_PoseAt = 0;
+                HoldLocalPose(false);
+            }
             return;
         }
 
@@ -144,6 +169,8 @@ namespace coop::game::revive {
             std::memcpy(g_DownAt, me, sizeof(me));
             g_ReachSince = 0;
             g_NextSend = 0;
+            g_PoseAt = now + 400; /* after the hit's own reaction has started */
+            g_PoseTries = 0;
             Logging.Log("[coop] revive: you're down at (%.1f, %.1f, %.1f); a partner has %lld s to reach you", me[0], me[1], me[2],
                         DownMs / 1000);
             notify::Show("You're down! A partner has %d s to reach you", static_cast<int>(DownMs / 1000));
@@ -152,9 +179,20 @@ namespace coop::game::revive {
         if (g_Down.load()) {
             uintptr_t link = LinkActor();
             s32* life = link ? LifeOf(link) : nullptr;
-            /* Stay put (and on a quarter heart) until someone comes. */
-            warp::PlaceLink(g_DownAt);
+            /* Stay where you fell (sideways: in the air or in water you still
+               drop or float), on a quarter heart, until someone comes. */
+            g_DownAt[1] = me[1];
+            warp::HoldLinkXZ(g_DownAt);
             if (life && *life > DownLife) *life = DownLife;
+            /* Sit down on the ground, a moment after the hit's reaction. The
+               game's own body sequences are dropped until he's up. */
+            if (g_PoseAt && now >= g_PoseAt) {
+                /* Asked twice: the first can land in the middle of the hit's
+                   reaction and not take. */
+                g_PoseAt = ++g_PoseTries < 2 ? now + 1300 : 0;
+                PlayLocalAS(DownSequence);
+                HoldLocalPose(true);
+            }
             s64 left = DownMs - (now - g_DownSince.load());
             if (now >= g_NextSend) { /* tell partners, and keep telling late joiners */
                 g_NextSend = now + 5000;
@@ -162,16 +200,21 @@ namespace coop::game::revive {
             }
             /* A partner standing by me gets me up. */
             const char* who = nullptr;
+            const net::Peer* nearest = nullptr;
+            float nearest_d = 0;
             for (auto& p : peers) {
                 if (!p.present || !p.has_state || p.state.map_area != area) continue;
                 float dx = p.state.pos[0] - me[0], dy = p.state.pos[1] - me[1], dz = p.state.pos[2] - me[2];
-                if (dx * dx + dy * dy + dz * dz <= ReachDist * ReachDist) who = p.name;
+                float d = dx * dx + dy * dy + dz * dz;
+                if (d <= ReachDist * ReachDist) who = p.name;
+                if (!nearest || d < nearest_d) nearest = &p, nearest_d = d;
             }
             if (who) {
                 if (!g_ReachSince) g_ReachSince = now;
                 if (now - g_ReachSince >= ReachMs) {
                     g_Down.store(false);
                     if (life) *life = ReviveLife;
+                    GetUp();
                     net::SendDowned(0, g_DownAt, 0);
                     Logging.Log("[coop] revive: %s got you back up (3 hearts)", who);
                     notify::Show("%s got you back up", who);
@@ -180,11 +223,20 @@ namespace coop::game::revive {
                 g_ReachSince = 0;
             }
             if (g_Down.load() && left <= 0) {
-                /* Out of time: on your own, on a quarter heart. */
+                /* Out of time. With a partner still in the area you come to
+                   beside them, on one heart; alone, you're left where you
+                   are on a quarter heart. */
                 g_Down.store(false);
+                GetUp();
                 net::SendDowned(2, g_DownAt, 0);
-                Logging.Log("[coop] revive: nobody reached you in time");
-                notify::Show("Nobody reached you in time. Careful: the next hit ends it");
+                if (nearest && warp::GoToPartner(nearest->id, now)) {
+                    if (life) *life = RespawnLife;
+                    Logging.Log("[coop] revive: nobody reached you in time; respawning beside %s with 1 heart", nearest->name);
+                    notify::Show("Nobody reached you. You come to beside %s with 1 heart", nearest->name);
+                } else {
+                    Logging.Log("[coop] revive: nobody reached you in time");
+                    notify::Show("Nobody reached you in time. Careful: the next hit ends it");
+                }
             }
         }
 

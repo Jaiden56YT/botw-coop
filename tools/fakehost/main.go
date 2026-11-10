@@ -68,6 +68,7 @@ func main() {
 	heal := flag.Int("heal", 0, "if > 0: share a meal of this many quarter hearts with everyone every 20 s, once a player is in the world")
 	rescue := flag.Bool("rescue", false, "when a player goes down, walk over to them 3 s later (and stand 1 m away)")
 	jumpAt := flag.Int("jump-at", 0, "if > 0: after this many seconds, jump 1.5 km east (like fast travel)")
+	animFixed := flag.Int("anim", 0, "report this movement state all the time (13 = down)")
 	hurt := flag.Bool("hurt", false, "20 hearts, dropping to 2.5 hearts for 20 s every 40 s (for the low-hearts warning)")
 	ride := flag.Bool("ride", false, "report riding a horse (movement state 11)")
 	anims := flag.Bool("anims", false, "cycle the reported movement state (every one: stand, move, climb, swim, glide, jump, fall, horse, surf) every 5 s")
@@ -86,7 +87,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	hello := []byte{1, 0}
+	hello := []byte{2, 0} // protocol version
 	var build [16]byte
 	for i := 0; i < 16; i++ {
 		fmt.Sscanf((*buildHex)[2*i:2*i+2], "%02x", &build[i])
@@ -213,6 +214,9 @@ func main() {
 			binary.LittleEndian.PutUint32(st[28:], 1|act<<8)
 			f32(st[16:], 0)
 			f32(st[24:], 0)
+		}
+		if *animFixed > 0 {
+			binary.LittleEndian.PutUint32(st[28:], uint32(*animFixed))
 		}
 		if *anims {
 			// anim::Category values: 1 Wait, 2 Move, 3 Climb, 4 ClimbWait, 5 Swim, 6 SwimWait,

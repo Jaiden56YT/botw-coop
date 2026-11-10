@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	ProtocolVersion = 1
+	ProtocolVersion = 2
 	MaxMessageSize  = 64 * 1024
 	headerSize      = 4 // type + flags, counted in length
 )

@@ -13,4 +13,10 @@ namespace coop::game::warp {
 
     /* Puts Link at `pos` and stops him (Havok body, matrix, fall height). Game thread. */
     bool PlaceLink(const float (&pos)[3]);
+
+    /* Keeps Link at pos sideways and lets him fall (a downed player in the air or in water). */
+    void HoldLinkXZ(const float (&pos)[3]);
+
+    /* Warps to this partner without a message of its own (the revive's respawn). */
+    bool GoToPartner(u8 id, s64 now_ms);
 }

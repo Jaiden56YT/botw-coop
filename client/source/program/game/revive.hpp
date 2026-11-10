@@ -14,6 +14,9 @@ namespace coop::game::revive {
     /* Startup: hooks the player's revive check. */
     void Install();
 
+    /* You're down, waiting for a partner. Any thread. */
+    bool IsDown();
+
     /* Game thread, once per tick (tracks whether a partner is with you). */
     void Tick(s64 now_ms);
 
