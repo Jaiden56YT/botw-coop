@@ -28,7 +28,11 @@ namespace coop::net {
         PlayerState  = 20,
         /* Game messages: the server forwards these to everyone else in the
            room, prefixed with the sender's id. */
-        WorldState   = 30, /* host -> all: f32 WM_Time, s32 WM_NumberOfDays */
+        WorldState   = 30, /* host -> all: f32 WM_Time, s32 WM_NumberOfDays, u8 weather, u8 climate */
+        Flag         = 31, /* any -> all: u8 kind (1 earned now, 2 catch-up), string name */
+        EnemyLife    = 32, /* any -> all: u32 area, u32 enemy HashId, s32 life */
+        Revived      = 33, /* any -> all: (no payload) I went down and a partner's presence revived me */
+        Gear         = 34, /* any -> all: 3 strings: worn head, upper, lower armor actor names ("" = none) */
     };
 
     /* Per-frame state of a player's own Link. Must stay 44 bytes. */
@@ -91,6 +95,7 @@ namespace coop::net {
         Reader(const u8* p, size_t n) : m_Ptr(p), m_Left(n) {}
 
         bool Ok() const { return m_Ok; }
+        size_t Left() const { return m_Left; }
         const u8* Take(size_t n) {
             if (!m_Ok || m_Left < n) { m_Ok = false; return nullptr; }
             const u8* p = m_Ptr;

@@ -9,6 +9,8 @@ namespace coop::game {
     struct WorldState {
         float time;   /* WM_Time: degrees, 360 = 24 h */
         s32 days;     /* WM_NumberOfDays */
+        u8 weather;   /* world::WeatherType (0 Bluesky .. 8 BlueskyRain), 0xFF = unknown */
+        u8 climate;   /* the host's climate (weather is only shared within one) */
     };
 
     /* Called every game tick (game thread). */

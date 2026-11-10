@@ -32,6 +32,133 @@ Singletons are reached through **GOT slots**: `adrp x8, page; ldr x8, [x8, #off]
 | Index lookups | bool `0x1143950`, s32 `0x1143958`, f32 `0x1143960` | Thunks into one sorted-hash search at `0x113226c`. |
 | get/set flag value | getBool `0x6b6980`, setBool `0x64af38`, getS32 `0xb4042c`, setS32 `0x6b6b3c`, getF32 `0xb366a0`, setF32 `0xb36c80` | `TimeMgr::calc_` (`0x14260b4`). Getters are `(mgr, out*, handle)`; setters are `(mgr, value, handle)`. |
 
+### Game-data flags: permissions and the write path
+
+`Manager+0xbd0` is a `TriggerParamRef`:
+
+| Offset | Field |
+|---|---|
+| `+8` | `TriggerParam**` primary (writes go here) |
+| `+16` | `TriggerParam**` secondary |
+| `+24` | `mCheckPermissions` |
+| `+25` | `mPropagateParam1Changes` |
+| `+26` | `mChangeOnlyOnce` (setters refuse while set) |
+
+- The manager's setters (`setBool(handle)` at `main+0x64af38`, then `main+0x64b134`) call **`TriggerParam::setBool(param, value, idx, checkPerms, bypassOneTrigger)` at `main+0x1138814`**. Every bool write ends there, including name-based writes from events. The mod hooks it to notice progress.
+- In gameplay `checkPerms` is 1. Progress flags (shrines, towers, Koroks) aren't writable from program code, only from events, so the plain setter returns 0 and does nothing.
+- The mod writes them by calling `TriggerParam::setBool` with `checkPerms = false` on both tables. Read-back confirms it sticks.
+- **Flag writes during loading or on the title screen don't stick.** Received flags wait until Link is in the world.
+- **The flag tables reset (`Manager+0xc28` changes) before the save's values arrive.** Reading "what's done" at that moment sees nothing. The mod re-reads the shared flags each time Link enters the world, and shares only writes made while he's in it. Flags that turned true during a loading screen in the same save are shared on the next world entry. Found with a 100% save: before the fix it sent a late joiner 0 of its 1,327 done flags, and a game rewriting an already-true flag would have handed the partner a free reward.
+- The shared list comes from `GameData/gamedata.ssarc` in `Pack/Bootup.pack` (45,027 flags, 42,027 of them bool):
+  - shrines: `Clear_Dungeon000`–`136`, plus `Open_`/`Enter_` (found/activated)
+  - towers: `MapTower_01`–`15`
+  - Divine Beasts: `Clear_Remains{Electric,Fire,Water,Wind}`
+  - Koroks: `MainField_Npc_HiddenKorokGround_<id>` (567) and `…Fly_<id>` (333)
+  - counters: `KorokNutsNum` and `HiddenKorok_Number` (s32)
+
+### Giving items
+
+- **`uking::ui::PauseMenuDataMgr::itemGet(this, const SafeString& name, int count, const WeaponModifierInfo*)`** is at `main+0xd921bc`. It's what runs when Link picks something up: it adds the item to the pouch and saves the pouch to game data.
+- Found from the `"PouchGet"` play report it sends. Its body has the decomp's "Default"/"Extra" name checks, `getType` (`main+0xd91414`) and `addToPouch` (`main+0xd92488`).
+- The manager's GOT slot is `main+0x1d67af0`. The game's own give-one-item helper (`main+0xbe0f10`) calls it with count 1 and no modifier, and the mod does the same.
+- Rewards: Spirit Orb `Obj_DungeonClearSeal`, Korok seed `Obj_KorokNuts`, Champion abilities `Obj_HeroSoul_{Zora,Goron,Rito,Gerudo}`. Giving `Obj_HeroSoul_Zora` made Mipha's Grace appear in the HUD at once.
+- Before Link has the Sheikah Slate (the Shrine of Resurrection save), the pause menu can't be opened, so the pouch can't be inspected there.
+
+### Map stamps (partner markers)
+
+**The map keeps its own stamp objects. Game data is only a copy.** Writing `MapApp_MapIconNo`/`MapApp_MapIconPos` changes nothing on screen (tried: the arrays were written and read back, and the map didn't change).
+
+- **Map manager:** the instance pointer is the global at `main+0x1e17ef8`. The map screen holds the same object at `screen+0x420`.
+  - `+0x610`/`+0x618`: `PtrArray` of stamp objects, a pool of 100.
+  - `+0x6a0`: linked list of saved stamps (records point at stamp objects).
+  - `+0x2b0`: list of stamps whose visibility changed.
+- **Stamp object:** vtable `0x1cdd340`.
+  - Fields: icon (s32) at `+0x1c`, position (Vec3f) at `+0x28`, flags (u32) at `+0x3c`.
+  - Flag bits: `0x10` active, `0x20` active changed, `0x8` placed, `0x200` visible, `0x4000` changed.
+  - Every stamp in a loaded save has flags `0x7638`.
+- **Functions:**
+  - `0xd868d0`: loader. Empties the pool and adds every used game-data slot through `0xd8b6b8`. It resets far more than stamps, so the mod doesn't call it.
+  - `0xd8a034`: writer. Copies the saved list back into the game-data arrays.
+  - `0xd8b6b8`: maps the icon to a category through the table at `0x16d9f78` (stride 8). Category 21 (icons 27–36) goes to **`0xd8aaa0(mgr, icon, const Vec3f* pos, bool)`**, which takes a free pool stamp, sets its icon and position, and activates it.
+  - Stamp vtable `+0xb8` = `0xd7b528`: `setPos(const Vec3f*)`.
+  - Stamp vtable `+0xc8` = `0xd81d04`: `setActive(bool)`. Calls `+0xd8` (`0xd7b9bc`, sets the 0x10/0x20 bits), then registers or unregisters the stamp in the saved list and runs the writer.
+  - `0xd7b8e4(stamp, bool)`: `setVisible`.
+- **Icons:** the stamp menu (`0xdbab6c` → `0xd8ac88` → `0xd8a960`) only places icons 27–35 and 37–41. **Icon 36 is never drawn,** even though it shares a category with 27–35. The mod uses 34. Icon 42 is a separate category (`0x17`).
+- **The game-data handles** are globals filled by `initCommonFlags` (`0xd19188`): `MapApp_MapIconNo` at `0x1da6d60`, `MapApp_MapIconPos` at `0x1da6d64`. Accessors: `setFlag_MapApp_MapIconNo(value, idx, debug)` at `0xd37790`, `setFlag_MapApp_MapIconPos(const Vec3f&, idx, debug)` at `0xd37810`, getters at `0xd37770`/`0xd377d0`.
+- **TriggerParam layout matches the 1.5.0 decomp.**
+  - The `getXIdx` stubs at `0x1143950`+ add `0x8`, `0x18` … `0x78` to the param, then branch to one search.
+  - The array search at `0x1143990` reads the bool-array table at `+0x98`, so S32 arrays are at `+0xa8` and Vec3f arrays at `+0x108`.
+  - `FlagS32` has its value at `+0x18` and hash at `+0x1c`; `FlagVector3f` has its value at `+0x30` and hash at `+0x3c`.
+  - Array index lookups: `getS32ArrayIdx` `0x1143a20`, `getVec3fArrayIdx` `0x1143cf0`.
+- **The mod's approach (`game/map.cpp`):**
+  - Add with `0xd8aaa0`, then toggle `setVisible`. Move with `setPos` once a second. Remove with `setActive(false)`, which updates game data too.
+  - Its stamps carry `0xA` in the low 4 mantissa bits of each coordinate. When a save is played, any of those still in it (the game saved while a partner was shown) are removed.
+  - Seen on screen: a partner stamp 400 m north of Link appeared on the map.
+  - Not checked: whether the open map follows a moving partner, or only updates when reopened.
+
+### Areas (which stage a player is in)
+
+- `ksys::StageInfo` statics are `FixedSafeString<32>`s (text pointer at `+8`): current map type at `main+0x1dae3a0` and current map name at `main+0x1dae3d8`.
+  - Found from their getters, `0x1208304` and `0x12082f8`. The map manager compares the first one with "MainField".
+  - In the overworld they read `MainField` / a grid section like `C-3`; in a shrine, `CDungeon` / `Dungeon000`.
+- The mod's area id is CRC32("MainField") for the whole overworld, and CRC32(type + name) anywhere else.
+
+### Actors: names, ids, life
+
+The Actor layout matches the 1.5.0 decomp (`mASList` at `+0x560` agrees):
+- `+0x10`: the name's text pointer (`BaseProc::mName`, a `FixedSafeString<64>` at `+0x8`).
+- `+0x640`: `mHashId`, the map placement id. **It's the same in every player's game**, so it identifies "the same enemy" across worlds. Spawned actors and sub-parts have 0.
+- Virtuals: `getMaxLife` (slot 30, vtable `+0xf0`), `killWithDropsAndEffects(int)` (slot 54, `+0x1b0`), `s32* getLife()` (slot 87, `+0x2b8`). The decomp names unknown virtuals `mNN` by slot, which is how these were counted.
+  - Checked on Link: `getLife` reads 120/120 on a 30-heart save. For Link and enemies the life field is at `+0x848`.
+  - `killWithDropsAndEffects(0)` on a Stone Talus removed it and its parts, with its normal death.
+- **Setting Link's life to 0 doesn't kill him.** The hearts go empty and he keeps standing. Death is decided in the player's damage handler (`0xca8f44`). At `0xca93f8` it checks whether `*getLife() <= 0` and, if so, calls **`tryRevive(player)` at `0xcead24`**; false goes to the game-over path (`0xca9b84`).
+  - `tryRevive` first checks a condition (`0xd358f0`), then player vtable `+0xa78` (Mipha's Grace; the path that plays "Kago_Heal"), then `+0xb50` (a fairy: removes `Animal_Insect_F` if the pouch has one, and plays "FairyResurrection").
+  - Found from the `Animal_Insect_F` string, which `0xcead64` (inside `tryRevive`) references.
+  - The mod hooks `tryRevive`: if the game's own revives fail and a partner is with you, it sets life to 3 hearts and returns true.
+
+### Player animation sequences for actions
+
+Logged with `test_move` (which presses the buttons) and the `ASList_StartAnimation` hook, per slot (0 body, 1 upper body, 2 weapon, 3 face):
+- Sword: `WeaponEquipOn` (slot 2) draws the weapon. `CutS1`, `CutS2`, `CutS3` and `CutSF` (finisher) are the swings on slots 0 and 1. `CutChargeWait` is the spin charge. `WaitAttention` / `TurnAttention` is the combat stance.
+- Bow: `BowCharge` then `BowShoot`, on slot 1 only.
+- Throw: `WeaponThrowCharge`.
+- Shield: only the face slot shows it (`FaceShieldGuard`).
+- Matching clips in `Model/Player_Animation.sbfres`: `Sword_Attack_S1`/`S2`/`S3`/`SF`, `Sword_Attack_Charge`, `Sword_Charge_Wait`, `Bow_Attack_Charge`, `Bow_Attack_Shoot`, `Sword_Throw_Charge_Wait`, `Sword_Throw_Throw`, `Shield_Guard_Wait`. They work on the puppet as one-clip sequences, like the movement ones.
+
+### Worn armor
+
+- **Worn armor and weapons are separate actors sitting on Link** (distance 0): `Armor_<id>_Head`/`_Upper`/`_Lower`, `Weapon_Sword_…`, `Weapon_Shield_…`, `Weapon_Bow_…`, `Weapon_Quiver_…`, `Weapon_Sheath_…`. There are also two `Armor_Default_Extra_*` actors.
+- An armor actor's pack holds one `Actor/ModelList/<model>.bmodellist`; its ActorInfo `bfres`/`mainModel` name the model archive. 413 armor pieces use 116 models (upgrades share one).
+- **An actor with an armor's model list and the puppet's ASList animates the armor with Link's clips.** The ASList's `AddRes` is `Player_Animation`, and armor skeletons use Link's bone names. That's what the `CoopGear_<model>` actors are.
+- `@MU` (model user override, InstParamPack string type 5) is written by the game for helper actors, e.g. shield surfing's `WakeBoardPlayer` and arrows. **Our NPC-profile actors ignore it**, even with `ModelUser = Dummy`, so each model needs its own actor.
+
+### Map reveal
+
+- The map's revealed regions follow `MapTower_NN` (shared). `MapTower_NN_OpenScaleLevel` / `_OpenCenterPos` drive the reveal animation. Checked with a save whose 15 tower flags were cleared: dark map without a partner, fully revealed after receiving the flags.
+
+### Weather
+
+- `ksys::world::Manager` instance is at GOT `0x1d66460` (from the weather event action at `0x651a78`). Its fields match the decomp:
+  - `mWeatherTypeTimer` at `+0x794`
+  - forced `mWeatherType` at `+0x7d1` (`0xff` = not forced)
+  - `mCurrentClimate` at `+0x780`
+  - `mMgrs` (9 jobs) at `+0x5c0`, found at runtime
+- `WeatherMgr` = `mMgrs[3]`; its current natural weather is at `+0x28`.
+- **`Manager::setWeatherType(u32 type, bool, bool, bool for_demo)` is at `0x14315dc`.** Found through the weather name table at `0x1db1770`, which the string overload at `0x143162c` loops over.
+  - It holds the weather for 4 frames, so guests call it every tick.
+  - Checked: a guest's weather read 0 (clear), then 6 (thunderstorm) after the host's weather arrived, and the sky changed.
+
+### Moving Link (warp): what didn't work
+
+- A breadth-first scan from Link's actor, and from his physics (`Actor+0x578`, the `InstanceSet`), found about 60 copies of his position. The physics copies included Havok's own memory (`0x655f…`), reached through the character controller at `InstanceSet+0x80`.
+- **Raising any group of them, or all of them, by 30 m didn't move him.** The game rebuilds his position from state not found yet.
+- Second try: `DynStartPos` and `StartPosName` are AI and debug parameters, not a stage change with a free position. Fast travel goes through events and named warp points.
+- Searching for `ksys::phys::RigidBody::setPosition` by its shape (three NaN self-compares, then a virtual tail call) found nothing. The OverwritePlayerPos strings (`0x111025c`) belong to a debug parameter list.
+
+### Module pitfalls
+
+- **No function-local `static` with a runtime initialiser.** It compiles to `__cxa_guard_acquire`, imported from the SDK. Called inside the game's frame (from a hook), it hung the whole game. Use file-scope variables instead. `nm -u client.elf | grep guard` should print nothing.
+
 ### Things that turned out to be wrong
 
 - **"A player actor exists" doesn't mean "in the world".** The title screen renders the Great Plateau with a Link actor parked at exactly `(-1060, 250, 1830)`. The mod treats that exact position as the title screen.
@@ -60,7 +187,40 @@ The fix that worked is a **custom actor pack**. `CoopGhost` is `Npc_DungeonPries
 
 `createActor` loads the new pack from the RomFS on demand. `ActorInfo.product.byml` itself has no size-table entry, so making it bigger is fine.
 
-The Link puppet will be built the same way: Link's model and animations, no physics.
+### The Link puppet (`CoopPlayer`)
+
+`CoopPlayer` is the monk's setup with Link's model and Link's animation sequences, and no physics. Its pack contains:
+- the monk's AI (`DemoWaitNpc`, whose root action plays the sequence named `Wait`)
+- `PauseMenuPlayer`'s model list (`Link`)
+- a generated one-clip sequence (element type 67) playing `Nml_Wait` from `Player_Animation`
+- `PhysicsUser`, `AttentionUser`, `ChemicalUser` and the e/s/x-link fields set to `Dummy`
+
+**Result: Link draws, follows, and animates.** Two things stood in the way, and both looked like a T-pose:
+
+1. **The ASList must be sorted by name.** The game looks sequence names up with a binary search (`main+0x14ffdb4`, reached via actor `+0x570` → `+0x98`). An unsorted `ASDefines` list makes some names silently unresolvable. My first list put `Wait` first, so it never played. `tools/build_romfs_mod.py` now sorts it.
+2. `instSize` (the actor's own heap) is raised from the monk's 326,640 to 700,000; the pause-menu Link uses 557,256. It's unclear whether this was needed on its own, but it's the safe value.
+
+How sequences are started (all in `offsets.hpp`):
+- An actor's `ASList*` is at `Actor+0x560`.
+- `ASList::startAnimationMaybe` is `main+0x149f24c`: `(list, f32, f32, const SafeString& name, int slot, int bank, bool)`. It returns nothing.
+- It silently does nothing if any of these fail:
+  - `list+0xd8` (the owning actor) is set
+  - `slot < list+0xb8`
+  - `bank < slots[slot]+0x20`, where the slots are at `list+0xc0`, 0x50 bytes each
+  - the name lookup (`main+0x149ed3c`) finds it
+- The mod calls it directly (`PlayAS` in `ghost.cpp`). It uses one-clip sequences (element type 67) for `Nml_Wait`, `Nml_Move_Walk`, `Nml_Move_Run`, `Nml_Move_Dash`, `Fall`, `Float_Float_F` (gliding), `Swim_Move_Slow_F` and `Swim_Wait`. Clip names come from `Player_Animation.sbfres`'s string table.
+
+**The player's own animation state.** The mod hooks `ASList::startAnimationMaybe` and watches calls for the local player's list (player actor `+0x560`), on slot 0 (the main body).
+- The player's sequence names come from `GameROMPlayer`'s ASList: 399 of them, such as `Wait`, `Move`, `ClimbMove`, `ClimbWait`, `SwimMove`, `SwimDash`, `ParashawlGlide`, `Jump`, `Fall` and `HorseRun*`.
+- `game/anim.cpp` maps them to a small category sent in `PlayerState::anim_hash`. Slots 1 and 3 carry upper-body and face sequences.
+
+Animation-slot layouts (keys are stored as hashes: `NumASSlot` = 1749500541, `IsParticalEnable` = 670993712, `TargetType` = 3788161224):
+
+| Slot | Monk | Pause-menu Link |
+|---|---|---|
+| 0 | face (`Face_Root`), skeletal, 2 slots | whole skeleton, partial off |
+| 1 | body (`Root`, face excluded), skeletal | `TargetType 1`, partial body |
+| 2 | `TargetType 3` (`Root`, `Spine_1`, `Face_Root`) | `TargetType 2` |
 
 ## Game files
 

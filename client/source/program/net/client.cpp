@@ -13,6 +13,9 @@
 #include "../game/ghost.hpp"
 #include "../game/autostart.hpp"
 #include "../game/world.hpp"
+#include "../game/progress.hpp"
+#include "../game/combat.hpp"
+#include "../game/revive.hpp"
 
 namespace coop::net {
 
@@ -40,6 +43,21 @@ namespace coop::net {
         bool g_WorldDirty = false;
         float g_WorldTime = 0;
         s32 g_WorldDays = 0;
+        u8 g_WorldWeather = 0xFF, g_WorldClimate = 0;
+
+        constexpr int FlagQueueSize = 2048;
+        const char* g_FlagQueue[FlagQueueSize];
+        bool g_FlagLive[FlagQueueSize];
+        int g_FlagHead = 0, g_FlagCount = 0;
+
+        struct EnemyLifeMsg { u32 area, hash; s32 life; };
+        constexpr int EnemyQueueSize = 256;
+        EnemyLifeMsg g_EnemyQueue[EnemyQueueSize];
+        int g_EnemyHead = 0, g_EnemyCount = 0;
+
+        bool g_RevivedPending = false;
+        char g_GearOut[3][32];
+        bool g_GearPending = false;
 
         bool g_StateDirty = false;
         PlayerState g_OutState;
@@ -160,6 +178,9 @@ namespace coop::net {
                     g_Connected = true;
                     Logging.Log("[coop] joined as player %d (%s), %d other(s) here",
                                 g_MyId, g_MyId == g_HostId ? "host" : "guest", count);
+                    /* Progress merges both ways: the others send us theirs (they see
+                       PlayerJoined), and we send them ours. */
+                    if (count > 0) game::progress::OnPlayerJoined();
                     return r.Ok();
                 }
                 case MsgType::Reject: {
@@ -173,6 +194,7 @@ namespace coop::net {
                     auto name = r.Str();
                     AddPeer(id, name);
                     Logging.Log("[coop] %.*s joined", (int)name.size(), name.data());
+                    game::progress::OnPlayerJoined();
                     return r.Ok();
                 }
                 case MsgType::PlayerLeft: {
@@ -205,12 +227,56 @@ namespace coop::net {
                     float t = r.Get<float>();
                     s32 d = r.Get<s32>();
                     if (!r.Ok()) return false;
+                    u8 weather = 0xFF, climate = 0;
+                    if (r.Left() >= 2) {
+                        weather = r.Get<u8>();
+                        climate = r.Get<u8>();
+                    }
                     bool from_host;
                     {
                         ScopedLock lock;
                         from_host = from == g_HostId;
                     }
-                    if (from_host) game::OnHostWorldState({t, d});
+                    if (from_host) game::OnHostWorldState({t, d, weather, climate});
+                    return true;
+                }
+                case MsgType::Flag: {
+                    r.Get<u8>(); /* sender id */
+                    u8 value = r.Get<u8>();
+                    auto name = r.Str();
+                    if (!r.Ok()) return false;
+                    /* value: 1 = earned just now, 2 = catch-up for a new player */
+                    if (value) game::progress::OnRemoteFlag(name.data(), name.size(), value == 1);
+                    return true;
+                }
+                case MsgType::EnemyLife: {
+                    r.Get<u8>(); /* sender id */
+                    u32 area = r.Get<u32>();
+                    u32 hash = r.Get<u32>();
+                    s32 life = r.Get<s32>();
+                    if (!r.Ok()) return false;
+                    game::combat::OnRemoteLife(area, hash, life);
+                    return true;
+                }
+                case MsgType::Gear: {
+                    u8 from = r.Get<u8>();
+                    std::string_view parts[3];
+                    for (auto& part : parts) part = r.Str();
+                    if (!r.Ok()) return false;
+                    ScopedLock lock;
+                    if (Peer* p = FindPeer(from)) {
+                        for (int i = 0; i < 3; i++) {
+                            size_t n = parts[i].size() < 31 ? parts[i].size() : 31;
+                            std::memcpy(p->gear[i], parts[i].data(), n);
+                            p->gear[i][n] = '\0';
+                        }
+                    }
+                    return true;
+                }
+                case MsgType::Revived: {
+                    u8 from = r.Get<u8>();
+                    if (!r.Ok()) return false;
+                    game::revive::OnPartnerRevived(from);
                     return true;
                 }
                 case MsgType::Ping: {
@@ -283,8 +349,17 @@ namespace coop::net {
             bool send_world = false;
             float world_time = 0;
             s32 world_days = 0;
+            u8 world_weather = 0xFF, world_climate = 0;
             char logs[LogSlots][LogLen];
             int nlogs = 0;
+            const char* flags[64];
+            bool flag_live[64];
+            int nflags = 0;
+            EnemyLifeMsg enemies[64];
+            int nenemies = 0;
+            bool send_revived = false;
+            char gear[3][32];
+            bool send_gear = false;
             {
                 ScopedLock lock;
                 if (g_StateDirty && g_Connected) {
@@ -296,7 +371,29 @@ namespace coop::net {
                     send_world = true;
                     world_time = g_WorldTime;
                     world_days = g_WorldDays;
+                    world_weather = g_WorldWeather;
+                    world_climate = g_WorldClimate;
                     g_WorldDirty = false;
+                }
+                while (g_FlagCount > 0 && nflags < 64 && g_Connected) {
+                    flag_live[nflags] = g_FlagLive[g_FlagHead];
+                    flags[nflags++] = g_FlagQueue[g_FlagHead];
+                    g_FlagHead = (g_FlagHead + 1) % FlagQueueSize;
+                    g_FlagCount--;
+                }
+                if (g_GearPending && g_Connected) {
+                    std::memcpy(gear, g_GearOut, sizeof(gear));
+                    g_GearPending = false;
+                    send_gear = true;
+                }
+                if (g_RevivedPending && g_Connected) {
+                    send_revived = true;
+                    g_RevivedPending = false;
+                }
+                while (g_EnemyCount > 0 && nenemies < 64 && g_Connected) {
+                    enemies[nenemies++] = g_EnemyQueue[g_EnemyHead];
+                    g_EnemyHead = (g_EnemyHead + 1) % EnemyQueueSize;
+                    g_EnemyCount--;
                 }
                 while (g_LogCount > 0) {
                     std::memcpy(logs[nlogs++], g_LogQueue[g_LogHead], LogLen);
@@ -309,10 +406,34 @@ namespace coop::net {
                 w.Str(logs[i]);
                 if (!SendMsg(w)) return false;
             }
+            for (int i = 0; i < nflags; i++) {
+                Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Flag);
+                w.U8(flag_live[i] ? 1 : 2);
+                w.Str(flags[i]);
+                if (!SendMsg(w)) return false;
+            }
+            if (send_gear) {
+                Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Gear);
+                for (auto& part : gear) w.Str(part);
+                if (!SendMsg(w)) return false;
+            }
+            if (send_revived) {
+                Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Revived);
+                if (!SendMsg(w)) return false;
+            }
+            for (int i = 0; i < nenemies; i++) {
+                Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::EnemyLife);
+                w.Bytes(&enemies[i].area, 4);
+                w.Bytes(&enemies[i].hash, 4);
+                w.Bytes(&enemies[i].life, 4);
+                if (!SendMsg(w)) return false;
+            }
             if (send_world) {
                 Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::WorldState);
                 w.Bytes(&world_time, 4);
                 w.Bytes(&world_days, 4);
+                w.U8(world_weather);
+                w.U8(world_climate);
                 if (!SendMsg(w)) return false;
             }
             if (send_state) {
@@ -357,6 +478,9 @@ namespace coop::net {
                 for (int i = 0; i < 3; i++) st.vel[i] = (pos[i] - last[i]) / dt;
             }
             st.rot_y = rot_y;
+            st.anim_hash = game::LocalAnimCategory();
+            st.map_area = game::LocalArea();
+            game::LocalLife(&st.health, &st.max_hp);
             std::memcpy(last, pos, sizeof(pos));
             last_ms = now;
             SubmitPlayerState(st);
@@ -392,8 +516,13 @@ namespace coop::net {
                 std::memcpy(gs.actor_name, g_Config.ghost_actor, sizeof(gs.actor_name));
                 gs.echo = g_Config.echo;
                 std::memcpy(gs.test_spawn, g_Config.test_spawn, sizeof(gs.test_spawn));
+                gs.test_move = g_Config.test_move;
                 game::ConfigureGhosts(gs);
                 game::EnableAutostart(g_Config.autostart);
+                if (g_Config.test_flag[0]) game::progress::SetTestFlag(g_Config.test_flag);
+                if (g_Config.test_menu) game::progress::SetTestMenu(true);
+                game::combat::SetLogNearby(g_Config.autostart);
+                game::revive::SetTest(g_Config.test_revive);
             }
             while (!InitNetwork()) Sleep(5000);
 
@@ -454,10 +583,43 @@ namespace coop::net {
         g_StateDirty = true;
     }
 
-    void SendWorldState(float time, s32 days) {
+    void SendFlag(const char* name, bool live) {
+        ScopedLock lock;
+        if (g_FlagCount == FlagQueueSize) return;
+        int slot = (g_FlagHead + g_FlagCount) % FlagQueueSize;
+        g_FlagQueue[slot] = name;
+        g_FlagLive[slot] = live;
+        g_FlagCount++;
+    }
+
+    void SendGear(const char* head, const char* upper, const char* lower) {
+        ScopedLock lock;
+        const char* parts[3] = {head, upper, lower};
+        for (int i = 0; i < 3; i++) {
+            std::strncpy(g_GearOut[i], parts[i] ? parts[i] : "", 31);
+            g_GearOut[i][31] = '\0';
+        }
+        g_GearPending = true;
+    }
+
+    void SendRevived() {
+        ScopedLock lock;
+        g_RevivedPending = true;
+    }
+
+    void SendEnemyLife(u32 area, u32 hash_id, s32 life) {
+        ScopedLock lock;
+        if (g_EnemyCount == EnemyQueueSize) return;
+        g_EnemyQueue[(g_EnemyHead + g_EnemyCount) % EnemyQueueSize] = {area, hash_id, life};
+        g_EnemyCount++;
+    }
+
+    void SendWorldState(float time, s32 days, u8 weather, u8 climate) {
         ScopedLock lock;
         g_WorldTime = time;
         g_WorldDays = days;
+        g_WorldWeather = weather;
+        g_WorldClimate = climate;
         g_WorldDirty = true;
     }
 

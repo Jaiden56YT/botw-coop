@@ -62,6 +62,26 @@ switch (args[2])
         Console.WriteLine($"wrote {read} bytes to {args[4]}");
         return 0;
     }
+    case "extract-prefix":
+    {
+        // Every file whose path starts with args[3], written flat into directory args[4].
+        string prefix = args[3].StartsWith('/') ? args[3] : "/" + args[3];
+        Directory.CreateDirectory(args[4]);
+        int n = 0;
+        foreach (DirectoryEntryEx entry in romfs.EnumerateEntries("/", "*", SearchOptions.RecurseSubdirectories))
+        {
+            if (entry.Type != DirectoryEntryType.File || !entry.FullPath.StartsWith(prefix)) continue;
+            using UniqueRef<IFile> file = new();
+            romfs.OpenFile(ref file.Ref, entry.FullPath.ToU8Span(), OpenMode.Read).ThrowIfFailure();
+            file.Get.GetSize(out long size).ThrowIfFailure();
+            byte[] data = new byte[size];
+            file.Get.Read(out long _, 0, data).ThrowIfFailure();
+            File.WriteAllBytes(Path.Combine(args[4], Path.GetFileName(entry.FullPath)), data);
+            n++;
+        }
+        Console.WriteLine($"wrote {n} files to {args[4]}");
+        return 0;
+    }
     default:
         Console.Error.WriteLine($"unknown command {args[2]}");
         return 2;

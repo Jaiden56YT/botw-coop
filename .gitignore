@@ -8,6 +8,7 @@ build/
 client/deploy/
 client/build/
 .ryujinx-p2/
+.ryujinx-p1/
 tools/RomfsTool/obj/
 tools/RomfsTool/bin/
 client/romfs/

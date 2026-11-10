@@ -13,6 +13,10 @@ namespace coop {
         bool echo;            /* debug: show a ghost of yourself, 1 s behind */
         bool autostart;       /* test: press A at the title/menus until in game */
         char test_spawn[256]; /* debug: actors spawned once in a row in front of Link */
+        char test_flag[64];   /* debug: progress flag set locally once connected */
+        bool test_move;       /* debug: move the local Link and log its animations */
+        bool test_menu;
+        bool test_revive;     /* debug: once a partner is near, set life to 0 and run the revive check */       /* debug: open the pause menu after a partner's reward */
     };
 
     /* Loads sd:/botw-coop/config.ini (on Ryujinx: <Ryujinx dir>/sdcard/botw-coop/config.ini).

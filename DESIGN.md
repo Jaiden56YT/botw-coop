@@ -145,9 +145,19 @@ Each milestone is playable before the next one starts.
 
 **Progress (2026-11-09):**
 - **M0** is done.
-- **M1** works on screen, except the map icon. Other players appear as a moving ghost (a physics-free Sheikah monk actor added by the mod).
-- From **M2**, shared time of day is done, and the RomFS tooling for the Link puppet is in place.
-- The game-data flag access that **M4** needs is in place.
+- **M1** is done, including the partner's marker on the map (a real map stamp, moved every second).
+- **M2 so far:**
+  - Other players are an animated Link puppet showing their real movement state (standing, walking, running, sprinting, climbing, swimming, gliding, jumping, falling, riding, shield surfing), with shared time of day.
+  - Not yet: gear, attack and item animations, warp to partner.
+- **M4 so far:**
+  - Shrine, tower, Divine Beast and Korok flags are shared both ways, with catch-up for late joiners. Checked with a 100% save: 1,327 flags sent to a late joiner.
+  - Live partner progress also gives rewards: Spirit Orbs, Korok seeds and Champion abilities. A Spirit Orb was seen arriving in Key Items.
+  - Not yet: map reveal from towers, separate co-op saves.
+- **Areas:** players send which stage they're in. Partners elsewhere are hidden; on the map they stay at the shrine they entered.
+- **M2:** the puppet wears the partner's armor (one gear actor per armor model, animated with the body) and shows their attacks, bow, throws and guard. The host's weather is shared within a climate. A partner's tower reveals your map. Not yet: weapons on the puppet, warp to partner (writing Link's position doesn't move him).
+- **M3 so far:** placed enemies (same map HashId in every world) share their life. Hits from either player count, and a kill in one world is a kill in all. **Co-op revive:** with no fairy or Mipha's Grace, a partner nearby gets you back up with 3 hearts instead of a game over (once every 2 minutes). Not yet: enemy movement sync, a crawl-and-revive downed state, friendly fire.
+- **Progress catch-up goes both ways:** a joiner gets everything done so far, and everyone else gets the joiner's progress.
+- **Saves:** for now co-op uses a separate Ryujinx user profile, which has its own saves.
 
 ---
 

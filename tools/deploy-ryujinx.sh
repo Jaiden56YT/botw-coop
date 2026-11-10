@@ -39,10 +39,10 @@ name = Link
 server = 127.0.0.1
 port = 7777
 password = hyrule
-# Actor shown in place of other players. CoopGhost (built by
-# tools/build_romfs_mod.py) is a Sheikah monk without physics, so it goes
-# exactly where the other player is. The Link puppet will replace it.
-ghost_actor = CoopGhost
+# Actor shown in place of other players. CoopPlayer (built by
+# tools/build_romfs_mod.py) is Link without physics, animated from the other
+# player's movement. CoopGhost is a Sheikah monk stand-in.
+ghost_actor = CoopPlayer
 # Debug: show a ghost of yourself, about 1 second behind you.
 echo = false
 INI

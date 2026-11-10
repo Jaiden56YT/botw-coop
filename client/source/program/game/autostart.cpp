@@ -35,6 +35,10 @@ namespace coop::game {
         std::atomic<s64> g_PlayerSeenMs{0};
         std::atomic<u32> g_HookCalls[3];
         std::atomic<u32> g_Presses{0};
+        std::atomic<u64> g_PressMask{0};
+        std::atomic<s64> g_PressUntil{0};
+        std::atomic<s32> g_StickX{0}, g_StickY{0};
+        std::atomic<s64> g_StickUntil{0};
 
         s64 NowMs() { return nn::os::ConvertToTimeSpan(nn::os::GetSystemTick()).GetMilliSeconds(); }
 
@@ -61,6 +65,20 @@ namespace coop::game {
         template<typename State>
         void Apply(int which, State* out, int count) {
             g_HookCalls[which].fetch_add(1, std::memory_order_relaxed);
+            if (g_StickUntil.load(std::memory_order_relaxed) > NowMs()) {
+                for (int i = 0; i < count; i++) {
+                    out[i].stick_l[0] = g_StickX.load();
+                    out[i].stick_l[1] = g_StickY.load();
+                }
+            }
+            u64 mask = g_PressMask.load(std::memory_order_relaxed);
+            if (mask) {
+                if (NowMs() < g_PressUntil.load()) {
+                    for (int i = 0; i < count; i++) out[i].buttons |= mask;
+                } else {
+                    g_PressMask.store(0);
+                }
+            }
             if (!ShouldPressA()) return;
             g_Presses.fetch_add(1, std::memory_order_relaxed);
             for (int i = 0; i < count; i++) out[i].buttons |= 1; /* A */
@@ -101,6 +119,17 @@ namespace coop::game {
         if (!g_Enabled.load()) return;
         Logging.Log("[coop] autostart: hid calls fullkey=%u handheld=%u joydual=%u, A injected %u times",
                     g_HookCalls[0].load(), g_HookCalls[1].load(), g_HookCalls[2].load(), g_Presses.load());
+    }
+
+    void PressButtons(u64 mask, int ms) {
+        g_PressUntil.store(NowMs() + ms);
+        g_PressMask.store(mask);
+    }
+
+    void HoldStick(s32 x, s32 y, int ms) {
+        g_StickX.store(x);
+        g_StickY.store(y);
+        g_StickUntil.store(NowMs() + ms);
     }
 
     void EnableAutostart(bool enabled) {

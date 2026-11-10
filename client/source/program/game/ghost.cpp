@@ -11,6 +11,13 @@
 #include "offsets.hpp"
 #include "player.hpp"
 #include "world.hpp"
+#include "progress.hpp"
+#include "autostart.hpp"
+#include "anim.hpp"
+#include "map.hpp"
+#include "combat.hpp"
+#include "revive.hpp"
+#include "gear.hpp"
 
 namespace coop::game {
 
@@ -42,6 +49,7 @@ namespace coop::game {
         static_assert(sizeof(ParamPack) == 0xd8);
 
         constexpr u8 ParamTypeVec3 = 4;
+        constexpr u8 ParamTypeString = 5; /* stored inline, NUL-terminated */
 
         struct Ghost {
             bool used;
@@ -54,18 +62,39 @@ namespace coop::game {
             u32 frames, overridden; /* how often the game changed it before our next write */
             float game_pos[3];    /* last position the game itself put it at */
             s64 report_ms;
+            const char* anim;     /* animation sequence currently playing */
+            float speed, vspeed;  /* smoothed horizontal / vertical speed, m/s */
+            s64 last_ms;
+            bool hidden;          /* parked out of sight: the player is in another area */
+            /* Worn armor, shown as CoopGear_<model> actors moved and animated with the body. */
+            char want_gear[3][64]; /* gear actor names wanted per slot ("" = none) */
+            char gear_name[3][64];
+            uintptr_t gear[3];
+            const char* gear_anim[3];
+            uintptr_t parked[6];   /* gear taken off, kept out of sight for reuse */
+            char parked_name[6][64];
         };
 
         constexpr u8 EchoId = 255;
         constexpr int MaxGhosts = net::MaxPeers + 1;
 
-        GhostSettings g_Settings = {"CoopGhost", false, ""};
+        GhostSettings g_Settings = {"CoopPlayer", false, ""};
         uintptr_t g_TestSpawnedFor = 0; /* player actor the test row was spawned for */
         bool g_Configured = false;
         Ghost g_Ghosts[MaxGhosts];
         uintptr_t g_LastPlayerActor = 0;
+        u32 g_LoggedArea = 0xFFFFFFFF;
         s64 g_LastTickMs = 0;
         std::atomic<bool> g_InTick{false};
+        std::atomic<bool> g_LogPlayerAS{false}; /* debug: log the local player's animation sequences */
+        std::atomic<u32> g_LocalAnim{0};        /* anim::Category of the local player's body */
+        std::atomic<u32> g_LocalAction{0};      /* anim::Action in progress, and until when: */
+        std::atomic<s64> g_LocalActionUntil{0};
+        /* Note: no function-local statics with runtime initialisers in this
+           module. They compile to __cxa_guard_acquire, which hung the game. */
+        s64 g_MoveTestAt = 0;
+        s64 g_JumpAt = 0;
+        int g_ActionStep = 0;
 
         /* Echo mode: ring of our own recent positions. */
         constexpr int EchoSlots = 64;
@@ -104,7 +133,7 @@ namespace coop::game {
             return found;
         }
 
-        uintptr_t SpawnNamed(const char* name, const float (&pos)[3], float rot_y) {
+        uintptr_t SpawnNamed(const char* name, const float (&pos)[3], float rot_y, const char* model_user = nullptr) {
             uintptr_t creator = ActorCreator();
             uintptr_t heap_slot = Read<uintptr_t>(Base() + offsets::Got_SpawnHeapOwner);
             uintptr_t heap_owner = heap_slot ? Read<uintptr_t>(heap_slot) : 0;
@@ -118,6 +147,10 @@ namespace coop::game {
             float rot[3] = {0, rot_y, 0};
             pack.Add(KeyPos, ParamTypeVec3, pos, sizeof(pos));
             pack.Add(KeyRot, ParamTypeVec3, rot, sizeof(rot));
+            /* "@MU": show another actor's model list (gear on the puppet). */
+            static const char KeyModelUser[] = "@MU";
+            if (model_user && model_user[0])
+                pack.Add(KeyModelUser, ParamTypeString, model_user, std::strlen(model_user) + 1);
 
             auto create = reinterpret_cast<CreateActorFn>(Base() + offsets::ActorCreator_CreateActor);
             uintptr_t actor = create(creator, name, heap, &pack, false, false);
@@ -155,7 +188,10 @@ namespace coop::game {
                     float ang = rot + 6.2831853f * i / count;
                     float p[3] = {me[0] + std::sin(ang) * 3.0f, me[1] + 1.0f, me[2] + std::cos(ang) * 3.0f};
                     (void)fx; (void)fz; (void)rx; (void)rz;
-                    uintptr_t a = SpawnNamed(start, p, rot + 3.14159265f);
+                    /* "Actor:ModelUser" spawns Actor showing ModelUser's model. */
+                    char* colon = std::strchr(start, ':');
+                    if (colon) *colon = '\0';
+                    uintptr_t a = SpawnNamed(start, p, rot + 3.14159265f, colon ? colon + 1 : nullptr);
                     Logging.Log("[coop] test spawn %d '%s' at (%.1f, %.1f, %.1f): %s %p", i + 1, start, p[0], p[1], p[2],
                                 a ? "ok" : "FAILED", reinterpret_cast<void*>(a));
                     i++;
@@ -164,6 +200,15 @@ namespace coop::game {
             }
         }
 
+        struct SafeString {
+            uintptr_t vtable;
+            const char* str;
+        };
+
+    }
+    bool PlayAS(uintptr_t actor, const char* name, int target);
+    namespace {
+
         void Place(uintptr_t actor, const float (&pos)[3], float rot_y) {
             auto* m = reinterpret_cast<float*>(actor + offsets::Actor_Mtx);
             float c = std::cos(rot_y), s = std::sin(rot_y);
@@ -171,6 +216,37 @@ namespace coop::game {
             m[0] = c;  m[1] = 0; m[2] = s;  m[3] = pos[0];
             m[4] = 0;  m[5] = 1; m[6] = 0;  m[7] = pos[1];
             m[8] = -s; m[9] = 0; m[10] = c; m[11] = pos[2];
+        }
+
+        /* Picks an animation from how the puppet is actually moving and plays it
+           when it changes. Actors without these sequences just ignore the call. */
+        void Animate(Ghost& g, const float (&before)[3], s64 now, u32 category) {
+            if (g.last_ms != 0 && now > g.last_ms && g.frames > 1) {
+                float dt = (now - g.last_ms) / 1000.0f;
+                float dx = g.shown[0] - before[0], dy = g.shown[1] - before[1], dz = g.shown[2] - before[2];
+                float h = std::sqrt(dx * dx + dz * dz) / dt;
+                float v = dy / dt;
+                if (h < 50.0f) g.speed += (h - g.speed) * 0.2f; /* ignore teleports */
+                if (std::fabs(v) < 50.0f) g.vspeed += (v - g.vspeed) * 0.2f;
+            }
+            g.last_ms = now;
+
+            u32 body = category & 0xFF, action = (category >> 8) & 0xFF;
+            const char* want = action ? anim::PuppetActionAS(static_cast<anim::Action>(action)) : nullptr;
+            if (!want && body) want = anim::PuppetAS(static_cast<anim::Category>(body), g.speed);
+            if (want) {
+                /* The partner told us what they're doing. */
+            } else if (g.vspeed < -9.0f) want = "Fall";
+            else if (g.vspeed < -0.8f && g.speed > 4.0f) want = "Glide";
+            else if (g.speed < 0.4f) want = "Wait";
+            else if (g.speed < 2.6f) want = "Walk";
+            else if (g.speed < 6.5f) want = "Run";
+            else want = "Dash";
+
+            if (want != g.anim) {
+                g.anim = want;
+                PlayAS(g.actor, want, 0);
+            }
         }
 
         float LerpAngle(float a, float b, float t) {
@@ -184,7 +260,57 @@ namespace coop::game {
             return nullptr;
         }
 
-        void Drive(Ghost& g, const float (&target)[3], float target_rot, s64 now) {
+        void ParkGear(Ghost& g, int s) {
+            if (!g.gear[s]) return;
+            float away[3] = {g.shown[0], -2000.0f, g.shown[2]};
+            bool known = false;
+            if (IsActorAlive(ActorCreator(), g.gear[s], &known) && known) {
+                Place(g.gear[s], away, 0);
+                for (int i = 0; i < 6; i++) {
+                    if (!g.parked[i]) {
+                        g.parked[i] = g.gear[s];
+                        std::memcpy(g.parked_name[i], g.gear_name[s], sizeof(g.parked_name[i]));
+                        break;
+                    }
+                }
+            }
+            g.gear[s] = 0;
+            g.gear_name[s][0] = '\0';
+            g.gear_anim[s] = nullptr;
+        }
+
+        /* Puts on / takes off gear pieces to match want_gear, then moves them with the body. */
+        void DriveGear(Ghost& g, s64 now) {
+            for (int s = 0; s < 3; s++) {
+                if (std::strcmp(g.want_gear[s], g.gear_name[s]) == 0) continue;
+                ParkGear(g, s);
+                if (!g.want_gear[s][0]) continue;
+                /* Reuse a parked piece of the same model if we have one. */
+                for (int i = 0; i < 6 && !g.gear[s]; i++) {
+                    if (g.parked[i] && std::strcmp(g.parked_name[i], g.want_gear[s]) == 0) {
+                        bool known = false;
+                        if (IsActorAlive(ActorCreator(), g.parked[i], &known) && known) g.gear[s] = g.parked[i];
+                        g.parked[i] = 0;
+                    }
+                }
+                if (!g.gear[s]) g.gear[s] = SpawnNamed(g.want_gear[s], g.shown, g.shown_rot);
+                if (g.gear[s]) {
+                    std::memcpy(g.gear_name[s], g.want_gear[s], sizeof(g.gear_name[s]));
+                    Logging.Log("[coop] player %d puts on %s", g.peer_id, g.gear_name[s]);
+                } else {
+                    /* Unknown or failed: don't retry every frame. */
+                    std::memcpy(g.gear_name[s], g.want_gear[s], sizeof(g.gear_name[s]));
+                }
+            }
+            for (int s = 0; s < 3; s++) {
+                if (!g.gear[s]) continue;
+                Place(g.gear[s], g.shown, g.shown_rot);
+                if (g.anim && g.gear_anim[s] != g.anim && PlayAS(g.gear[s], g.anim, 0)) g.gear_anim[s] = g.anim;
+            }
+            (void)now;
+        }
+
+        void Drive(Ghost& g, const float (&target)[3], float target_rot, s64 now, u32 category) {
             uintptr_t creator = ActorCreator();
             if (g.actor) {
                 bool known = false;
@@ -205,8 +331,16 @@ namespace coop::game {
                 }
                 std::memcpy(g.shown, target, sizeof(g.shown));
                 g.shown_rot = target_rot;
-                Logging.Log("[coop] spawned ghost for player %d (%s) at %p", g.peer_id, g_Settings.actor_name,
-                            reinterpret_cast<void*>(g.actor));
+                g.anim = nullptr;
+                Logging.Log("[coop] spawned ghost for player %d (%s) at %p, ASList %p", g.peer_id, g_Settings.actor_name,
+                            reinterpret_cast<void*>(g.actor),
+                            reinterpret_cast<void*>(Read<uintptr_t>(g.actor + offsets::Actor_ASList)));
+            }
+            if (g.hidden) {
+                /* Back in our area: appear where they are, not where they left. */
+                g.hidden = false;
+                std::memcpy(g.shown, target, sizeof(g.shown));
+                Logging.Log("[coop] player %d is back in this area", g.peer_id);
             }
             /* Ease toward the target; snap if it jumped (fast travel, respawn). */
             float dx = target[0] - g.shown[0], dy = target[1] - g.shown[1], dz = target[2] - g.shown[2];
@@ -235,8 +369,12 @@ namespace coop::game {
                             g.peer_id, g.shown[0], g.shown[1], g.shown[2], g.overridden, g.frames,
                             g.game_pos[0], g.game_pos[1], g.game_pos[2]);
             }
+            float before[3];
+            std::memcpy(before, g.written, sizeof(before));
             Place(g.actor, g.shown, g.shown_rot);
             std::memcpy(g.written, g.shown, sizeof(g.written));
+            Animate(g, before, now, category);
+            DriveGear(g, now);
         }
 
         bool LocalPlayer(uintptr_t* actor_out, float (&pos)[3], float* rot) {
@@ -262,6 +400,34 @@ namespace coop::game {
             }
             if (!have_me) return;
 
+            /* Debug: walk forward, run, jump, so the player's own animation
+               names show up in the log. */
+            if (g_Settings.test_move && g_MoveTestAt == 0) g_MoveTestAt = now + 4000;
+            if (g_MoveTestAt > 0 && now > g_MoveTestAt) {
+                g_MoveTestAt = -1;
+                g_JumpAt = now + 3000;
+                g_LogPlayerAS.store(true);
+                HoldStick(0, 32767, 6000);
+                Logging.Log("[coop] test: moving forward");
+            }
+            if (g_JumpAt > 0 && now > g_JumpAt) {
+                /* Then a fixed sequence of actions, logging the sequences they start. */
+                struct Step { u64 mask; int ms; const char* what; };
+                const Step steps[] = {
+                    {1ull << 2, 150, "jump (X)"},     {1ull << 3, 150, "attack (Y)"}, {1ull << 3, 150, "attack (Y)"},
+                    {1ull << 3, 150, "attack (Y)"},   {1ull << 8, 2000, "guard (ZL)"}, {1ull << 9, 2500, "bow (ZR)"},
+                    {1ull << 3, 2500, "charge (hold Y)"}, {1ull << 7, 150, "throw (R)"},
+                };
+                int i = g_ActionStep++;
+                if (i < static_cast<int>(sizeof(steps) / sizeof(steps[0]))) {
+                    PressButtons(steps[i].mask, steps[i].ms);
+                    Logging.Log("[coop] test: %s", steps[i].what);
+                    g_JumpAt = now + steps[i].ms + 1500;
+                } else {
+                    g_JumpAt = -1;
+                }
+            }
+
             if (g_Settings.test_spawn[0] && g_TestSpawnedFor != player_actor) {
                 g_TestSpawnedFor = player_actor;
                 SpawnTestRow(me, my_rot);
@@ -282,7 +448,7 @@ namespace coop::game {
                     float orbit = (now % 12000) / 12000.0f * 6.2831853f;
                     float c = std::cos(pick->rot + orbit), s = std::sin(pick->rot + orbit);
                     float target[3] = {pick->pos[0] + c * 2.5f, pick->pos[1], pick->pos[2] - s * 2.5f};
-                    if (Ghost* g = FindOrAdd(EchoId)) Drive(*g, target, pick->rot + orbit + 1.5708f, now);
+                    if (Ghost* g = FindOrAdd(EchoId)) Drive(*g, target, pick->rot + orbit + 1.5708f, now, 0);
                 }
             }
 
@@ -290,14 +456,43 @@ namespace coop::game {
             net::GetPeers(peers);
             s64 tick_hz = nn::os::GetSystemTickFrequency();
             u64 tick_now = nn::os::GetSystemTick().GetInt64Value();
+            u32 my_area = LocalArea();
+            if (my_area != g_LoggedArea) {
+                g_LoggedArea = my_area;
+                Logging.Log("[coop] area: %s / %s (%08x)", LocalMapType(), LocalMapName(), my_area);
+            }
             for (auto& p : peers) {
                 if (!p.present || !p.has_state) continue;
+                /* In another area (a shrine, a Divine Beast, or the overworld while
+                   we're in one): their coordinates mean nothing here. Hide them. */
+                if (p.state.map_area != my_area) {
+                    for (auto& g : g_Ghosts) {
+                        if (!g.used || g.peer_id != p.id || !g.actor || g.hidden) continue;
+                        bool known = false;
+                        if (IsActorAlive(ActorCreator(), g.actor, &known) && known) {
+                            float away[3] = {g.shown[0], -2000.0f, g.shown[2]};
+                            Place(g.actor, away, 0);
+                            for (uintptr_t piece : g.gear)
+                                if (piece) Place(piece, away, 0);
+                            g.hidden = true;
+                            Logging.Log("[coop] player %d is in another area; hiding them", g.peer_id);
+                        }
+                    }
+                    continue;
+                }
                 /* Extrapolate a little using velocity so motion looks continuous. */
                 float age = static_cast<float>(tick_now - p.state_tick) / static_cast<float>(tick_hz);
                 if (age > 0.25f) age = 0.25f;
                 float target[3];
                 for (int i = 0; i < 3; i++) target[i] = p.state.pos[i] + p.state.vel[i] * age;
-                if (Ghost* g = FindOrAdd(p.id)) Drive(*g, target, p.state.rot_y, now);
+                if (Ghost* g = FindOrAdd(p.id)) {
+                    for (int s = 0; s < 3; s++) {
+                        char want[64] = {};
+                        if (p.gear[s][0] && !gear::GearActorFor(p.gear[s], want)) want[0] = '\0';
+                        std::memcpy(g->want_gear[s], want, sizeof(want));
+                    }
+                    Drive(*g, target, p.state.rot_y, now, p.state.anim_hash);
+                }
             }
 
             /* Players who left: park their ghost out of sight. */
@@ -309,11 +504,65 @@ namespace coop::game {
                     float away[3] = {g.shown[0], -2000.0f, g.shown[2]};
                     bool known = false;
                     if (IsActorAlive(ActorCreator(), g.actor, &known) && known) Place(g.actor, away, 0);
+                    for (int sl = 0; sl < 3; sl++) ParkGear(g, sl);
                     g.used = false;
                     g.actor = 0;
                 }
             }
         }
+    }
+
+    namespace {
+        uintptr_t LocalPlayerASList() {
+            uintptr_t info = Read<uintptr_t>(Base() + offsets::PlayerInfoInstance);
+            uintptr_t actor = info ? Read<uintptr_t>(info + offsets::PlayerInfo_PlayerActor) : 0;
+            return actor ? Read<uintptr_t>(actor + offsets::Actor_ASList) : 0;
+        }
+    }
+
+    /* Sees every animation sequence the game starts. Used to learn which
+       sequence the local player is in (debug logging for now). */
+    HOOK_DEFINE_TRAMPOLINE(StartAnimationHook) {
+        static void Callback(uintptr_t as_list, float a, float b, const SafeString& name, int target, int bank, bool flag) {
+            Orig(as_list, a, b, name, target, bank, flag);
+            if (!name.str || as_list != LocalPlayerASList()) return;
+            if (target != 0 && g_LogPlayerAS.load(std::memory_order_relaxed))
+                Logging.Log("[coop] player AS slot %d '%s'", target, name.str);
+            /* Attacks, bow, throw, guard: any slot. */
+            int ms = 0;
+            bool ends_hold = false;
+            anim::Action act = anim::ActionFromPlayerAS(name.str, target, &ms, &ends_hold);
+            if (act != anim::NoAction) {
+                g_LocalAction.store(act, std::memory_order_relaxed);
+                g_LocalActionUntil.store(NowMs() + ms, std::memory_order_relaxed);
+            } else if (ends_hold) {
+                u32 cur = g_LocalAction.load(std::memory_order_relaxed);
+                if (cur == anim::ChargeWait || cur == anim::ThrowAim) g_LocalActionUntil.store(0, std::memory_order_relaxed);
+            }
+            /* Slot 0 is the player's main body sequence. */
+            if (target == 0 && name.str && as_list == LocalPlayerASList()) {
+                anim::Category c = anim::FromPlayerAS(name.str);
+                if (c != anim::Unknown) g_LocalAnim.store(c, std::memory_order_relaxed);
+                if (g_LogPlayerAS.load(std::memory_order_relaxed))
+                    Logging.Log("[coop] player AS '%s' -> category %u", name.str, (u32)c);
+            }
+        }
+    };
+
+    u32 LocalAnimCategory() {
+        u32 body = g_LocalAnim.load(std::memory_order_relaxed);
+        u32 action = NowMs() < g_LocalActionUntil.load(std::memory_order_relaxed) ? g_LocalAction.load(std::memory_order_relaxed) : 0;
+        return body | (action << 8);
+    }
+
+    bool PlayAS(uintptr_t actor, const char* name, int target) {
+        uintptr_t as_list = actor ? Read<uintptr_t>(actor + offsets::Actor_ASList) : 0;
+        if (!as_list) return false;
+        uintptr_t slot = Read<uintptr_t>(Base() + offsets::Got_SafeStringVtableBase);
+        SafeString str{slot + 0x10, name};
+        auto start = reinterpret_cast<bool (*)(uintptr_t, float, float, const SafeString&, int, int, bool)>(
+            Base() + offsets::ASList_StartAnimation);
+        return start(as_list, -1.0f, -1.0f, str, target, 0, true);
     }
 
     HOOK_DEFINE_TRAMPOLINE(GetPlayerPosHook) {
@@ -325,6 +574,11 @@ namespace coop::game {
             if (g_Configured && g_InTick.compare_exchange_strong(expected, true)) {
                 Tick();
                 WorldTick(NowMs());
+                progress::Tick();
+                map::Tick(NowMs());
+                combat::Tick(NowMs());
+                revive::Tick(NowMs());
+                gear::Tick(NowMs());
                 g_InTick.store(false);
             }
             return result;
@@ -333,6 +587,7 @@ namespace coop::game {
 
     void InstallGhosts() {
         GetPlayerPosHook::InstallAtOffset(offsets::PlayerInfo_GetPlayerPos);
+        StartAnimationHook::InstallAtOffset(offsets::ASList_StartAnimation);
     }
 
     void ConfigureGhosts(const GhostSettings& settings) {

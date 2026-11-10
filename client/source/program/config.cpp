@@ -51,6 +51,10 @@ namespace coop {
             else if (is("echo")) out.echo = IsTrue(val, vlen);
             else if (is("autostart")) out.autostart = IsTrue(val, vlen);
             else if (is("test_spawn")) Copy(out.test_spawn, sizeof(out.test_spawn), val, vlen);
+            else if (is("test_flag")) Copy(out.test_flag, sizeof(out.test_flag), val, vlen);
+            else if (is("test_move")) out.test_move = IsTrue(val, vlen);
+            else if (is("test_menu")) out.test_menu = IsTrue(val, vlen);
+            else if (is("test_revive")) out.test_revive = IsTrue(val, vlen);
             else if (is("port")) {
                 char tmp[8];
                 Copy(tmp, sizeof(tmp), val, vlen);
@@ -136,11 +140,15 @@ namespace coop {
         out.port = COOP_SERVER_PORT;
         out.name[0] = '\0';
         Copy(out.password, sizeof(out.password), COOP_PASSWORD, std::strlen(COOP_PASSWORD));
-        static const char DefaultGhost[] = "CoopGhost";
+        static const char DefaultGhost[] = "CoopPlayer";
         Copy(out.ghost_actor, sizeof(out.ghost_actor), DefaultGhost, sizeof(DefaultGhost) - 1);
         out.echo = false;
         out.autostart = false;
         out.test_spawn[0] = '\0';
+        out.test_flag[0] = '\0';
+        out.test_move = false;
+        out.test_menu = false;
+        out.test_revive = false;
 
         bool from_file = ReadConfigFile(out);
         if (out.name[0] == '\0') UseProfileName(out);
