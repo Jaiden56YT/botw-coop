@@ -21,6 +21,10 @@
 #include "items.hpp"
 #include "warp.hpp"
 #include "notify.hpp"
+#include "status.hpp"
+#include "research.hpp"
+#include "enemies.hpp"
+#include "meals.hpp"
 #include "weapons.hpp"
 
 namespace coop::game {
@@ -755,6 +759,10 @@ namespace coop::game {
                 items::Tick(NowMs());
                 warp::Tick(NowMs());
                 notify::Tick(NowMs());
+                status::Tick(NowMs());
+                research::Tick(NowMs());
+                enemies::Tick(NowMs());
+                meals::Tick(NowMs());
                 LogMountedOffset(NowMs());
                 KeyScriptTick(NowMs());
                 g_InTick.store(false);

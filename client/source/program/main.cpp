@@ -11,6 +11,9 @@
 #include "game/revive.hpp"
 #include "game/weapons.hpp"
 #include "game/notify.hpp"
+#include "game/enemies.hpp"
+#include "game/meals.hpp"
+#include "game/saves.hpp"
 
 namespace {
 
@@ -41,10 +44,13 @@ namespace {
             return;
         }
 
+        coop::game::saves::Install();
         coop::game::InstallGhosts();
         coop::game::InstallAutostart();
         coop::game::progress::Install();
         coop::game::combat::Init();
+        coop::game::enemies::Init();
+        coop::game::meals::Init();
         coop::game::revive::Install();
         coop::game::notify::Install();
         coop::game::weapons::Init();

@@ -10,4 +10,7 @@ namespace coop::game::warp {
 
     /* Game thread, every tick. */
     void Tick(s64 now_ms);
+
+    /* Puts Link at `pos` and stops him (Havok body, matrix, fall height). Game thread. */
+    bool PlaceLink(const float (&pos)[3]);
 }

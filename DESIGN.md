@@ -153,13 +153,13 @@ Each milestone is playable before the next one starts.
 - **M4 so far:**
   - Shrine, tower, Divine Beast and Korok flags are shared both ways, with catch-up for late joiners. Checked with a 100% save: 1,327 flags sent to a late joiner.
   - Live partner progress also gives rewards: Spirit Orbs, Korok seeds and Champion abilities. A Spirit Orb was seen arriving in Key Items.
-  - Not yet: map reveal from towers, separate co-op saves.
+  - Not yet: map reveal from towers.
 - **Areas:** players send which stage they're in. Partners elsewhere are hidden; on the map they stay at the shrine they entered.
 - **M2:** the puppet wears the partner's armor (one gear actor per armor model, animated with the body) and carries their weapons on the right bones (the game's own bone binding), and shows their attacks, bow, throws and guard. The host's weather and Blood Moon are shared. A partner's tower reveals your map. **Warp to partner** (hold the left stick click): Link's Havok position and matrix are written together; long warps go in 250 m hops through the sky so the world streams in behind him.
-- **M3 so far:** placed enemies (same map HashId in every world) share their life. Hits from either player count, and a kill in one world is a kill in all. **Co-op revive:** with no fairy or Mipha's Grace, a partner nearby gets you back up with 3 hearts instead of a game over (once every 2 minutes). Not yet: enemy movement sync, a crawl-and-revive downed state, friendly fire.
-- **M5 so far:** trading weapons and materials (drop, put down or throw near a partner), a horse under a riding partner, three or more players at once, and on-screen messages in the game's own info banner (joins, gifts with in-game item names, revives, warps).
+- **M3 so far:** placed enemies (same map HashId in every world) share their life. Hits from either player count, and a kill in one world is a kill in all. **Co-op revive:** with no fairy or Mipha's Grace and a partner in the area, you go down for 30 s (pinned, on a quarter heart, can't be finished) and a partner reaching you gets you up with 3 hearts; otherwise you're released on that quarter heart (once every 2 minutes). **Enemy positions:** the player closest to each placed enemy sends its position and facing; the others slide their copy there through its Havok rigid body. Not yet: enemy animation and attack sync, a crawling animation while down, friendly fire.
+- **M5 so far:** trading weapons and materials (drop, put down or throw near a partner), a horse under a riding partner, three or more players at once, and on-screen messages in the game's own info banner (joins, gifts with in-game item names, revives, warps, and a warning when a partner is low on hearts), and shared meals (healing you eat next to a partner heals them too).
 - **Progress catch-up goes both ways:** a joiner gets everything done so far, and everyone else gets the joiner's progress.
-- **Saves:** for now co-op uses a separate Ryujinx user profile, which has its own saves.
+- **Saves:** with the mod installed, every save path under the game's save mount is redirected into `save:/coop/`, seeded from the normal saves the first time (a `seeded` marker is written last; an incomplete copy is removed and the normal saves are used). One rolling backup (`save:/coop_backup`) is made at each launch.
 
 ---
 

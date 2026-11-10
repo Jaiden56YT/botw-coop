@@ -2,6 +2,7 @@
 
 #include <common.hpp>
 #include "protocol.hpp"
+#include "../game/enemies.hpp"
 
 namespace coop::net {
 
@@ -48,8 +49,17 @@ namespace coop::net {
     /* Queues "this enemy's life is now `life`" for the room. Any thread. */
     void SendEnemyLife(u32 area, u32 hash_id, s32 life);
 
+    /* game::meals: we ate this much healing (quarter hearts) next to a partner. */
+    void SendHeal(u16 quarters);
+
+    /* Where the enemies we're closest to are (game::enemies). Replaces any batch not sent yet. */
+    void SendEnemyPoses(u32 area, const game::enemies::Pose* poses, int count);
+
     /* Tells the room we went down and were revived. Any thread. */
     void SendRevived();
+
+    /* game::revive: I'm down (1), back up (0) or out of time (2), at `pos`. */
+    void SendDowned(u8 state, const float* pos, u8 seconds_left);
 
     /* Tells the room what we're wearing. Any thread. */
     void SendGear(const char* head, const char* upper, const char* lower);

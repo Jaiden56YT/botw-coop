@@ -244,6 +244,8 @@ namespace coop::game::items {
         }
     }
 
+    bool InMenu(s64 now) { return now - g_PausedAt < 500; }
+
     void SetTest(const char* name) { std::strncpy(g_Test, name ? name : "", sizeof(g_Test) - 1); }
 
     void Tick(s64 now) {

@@ -195,6 +195,19 @@ Logged with `test_move` (which presses the buttons) and the `ASList_StartAnimati
 - Moving every other copy of the old position (311 of them, found by a memory scan) didn't help either.
 - Earlier, without the Havok chain: a breadth-first scan from Link's actor and his physics (`Actor+0x578`) found about 60 copies of his position, and raising them by 30 m didn't move him. `DynStartPos` and `StartPosName` are AI and debug parameters. Fast travel goes through the map screen (`0xdb155c` sets `App_Map_WarpLocationName`, setter `0xd35870`, then UI screen `0x3e`) and an event.
 
+### Enemy bodies (enemy movement sync)
+
+- Link's Havok position is inside an `hkpRigidBody`: its vtable is 0x1c0 before the position, at main+0x1b87b20, and the `hkpMotion` starts at body+0x150 (position at body+0x1c0, linear velocity at body+0x270). Enemies' bodies have the same vtable, and a Bokoblin's body sits exactly at its actor's position.
+- No pointer path from an actor, or from its physics (`Actor+0x578`), to its body turned up, 3 or 4 levels deep. The mod finds a body by scanning memory for the vtable at the actor's position: a full scan of the address space took 17-20 ms, and the regions where bodies turn up are remembered and scanned first.
+- Writing the body position (and the actor matrix) moved a Bokoblin 4 m, and it carried on from there. Writing its velocity did nothing: its AI sets that every frame. So the mod slides the body toward the owner's position each tick (at most 12 m/s, horizontal only) and snaps it when it's more than 4 m off.
+- Warp detail found on the way: right after a placement, Link's position can read as the old spot for a tick, which looked like "he moved, so the area has loaded". The warp now judges a hop only once Link reads as being on it.
+
+### Save files
+
+- BotW mounts its save data as `save` (`nn::fs::MountSaveData`) and names files through its own file layer (`%s://%s`): `save:/0/game_data.sav` … `save:/7/`, `caption.sav`/`caption.jpg` per slot, `option.sav`, `tracker/trackblock%02d.sav`, `pict_book/*.jpg`, `album/`, `exhibition`. Every access ends in an imported `nn::fs` call that takes a path: `OpenFile`, `CreateFile`, `DeleteFile`, `GetEntryType`, `OpenDirectory`, `CreateDirectory`, `DeleteDirectoryRecursively`. Hooking those and rewriting `save:/X` to `save:/coop/X` moves all of it; `CommitSaveData("save")` commits the whole file system, so nothing else changes.
+- `nn::fs::DirectoryEntry`: the entry type (0 directory, 1 file) is the byte at +0x304; the header's `m_Type` at +0x301 is padding. Reading it from +0x301 made directories look like files, so the first copy failed and the game, finding no saves, started a new game. The mod now uses only a complete copy.
+- A 100% save is 226 files (the picture book alone is over 150 photos).
+
 ### On-screen messages
 
 - The info banner: `0xe7a780(idx)` shows MainScreen_00 info message `idx` (it loads the empty string and falls into `0xe7a790(idx, const SafeString*)`, which gets the MainScreen from `0xe7a240` and queues the message with `0xda9df4`). The labels are a table of 0x31 SafeStrings at `0x1daa3b0`: index `0x21` is "0028" ("The Master Sword has returned to the forest"), `0x2a` is "0061", the same two the 1.6.0 practice mod borrows.

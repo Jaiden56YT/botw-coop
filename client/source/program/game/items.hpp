@@ -17,6 +17,9 @@ namespace coop::game::items {
     /* Game thread, every tick. */
     void Tick(s64 now_ms);
 
+    /* The pause menu is open (the game's clock has stood still for 1.2 s or more). */
+    bool InMenu(s64 now_ms);
+
     /* Debug: spawn this item at Link's feet once, as if dropped from the menu. */
     void SetTest(const char* name);
 }

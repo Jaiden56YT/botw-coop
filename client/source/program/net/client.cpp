@@ -19,6 +19,8 @@
 #include "../game/weapons.hpp"
 #include "../game/items.hpp"
 #include "../game/notify.hpp"
+#include "../game/research.hpp"
+#include "../game/meals.hpp"
 
 namespace coop::net {
 
@@ -59,7 +61,15 @@ namespace coop::net {
         EnemyLifeMsg g_EnemyQueue[EnemyQueueSize];
         int g_EnemyHead = 0, g_EnemyCount = 0;
 
+        game::enemies::Pose g_EnemyPosOut[game::enemies::MaxPerMessage];
+        int g_EnemyPosCount = 0;
+        u32 g_EnemyPosArea = 0;
+
         bool g_RevivedPending = false;
+        u32 g_HealPending = 0;
+        struct DownedOut { u8 state; float pos[3]; u8 left; };
+        DownedOut g_DownedOut[4];
+        int g_DownedOutCount = 0;
         char g_GearOut[3][32];
         WeaponPose g_WeaponsOut[MaxWeapons];
         int g_WeaponsOutCount = 0;
@@ -279,6 +289,23 @@ namespace coop::net {
                     game::combat::OnRemoteLife(area, hash, life);
                     return true;
                 }
+                case MsgType::EnemyPos: {
+                    u8 from = r.Get<u8>();
+                    u32 area = r.Get<u32>();
+                    u8 count = r.Get<u8>();
+                    game::enemies::Pose poses[game::enemies::MaxPerMessage];
+                    int n = 0;
+                    for (u8 i = 0; i < count && r.Ok(); i++) {
+                        game::enemies::Pose p;
+                        p.hash = r.Get<u32>();
+                        for (float& f : p.pos) f = r.Get<float>();
+                        p.rot_y = r.Get<float>();
+                        if (n < game::enemies::MaxPerMessage) poses[n++] = p;
+                    }
+                    if (!r.Ok()) return false;
+                    game::enemies::OnRemote(from, area, poses, n);
+                    return true;
+                }
                 case MsgType::Gear: {
                     u8 from = r.Get<u8>();
                     std::string_view parts[3];
@@ -332,6 +359,23 @@ namespace coop::net {
                         std::memcpy(p->weapons, poses, sizeof(poses));
                         p->weapon_count = static_cast<u8>(n);
                     }
+                    return true;
+                }
+                case MsgType::Downed: {
+                    u8 from = r.Get<u8>();
+                    u8 state = r.Get<u8>();
+                    float pos[3];
+                    for (float& f : pos) f = r.Get<float>();
+                    u8 left = r.Get<u8>();
+                    if (!r.Ok()) return false;
+                    game::revive::OnPartnerDowned(from, state, pos, left);
+                    return true;
+                }
+                case MsgType::Heal: {
+                    u8 from = r.Get<u8>();
+                    u16 q = r.Get<u16>();
+                    if (!r.Ok()) return false;
+                    game::meals::OnPartnerHeal(from, q);
                     return true;
                 }
                 case MsgType::Revived: {
@@ -419,7 +463,13 @@ namespace coop::net {
             int nflags = 0;
             EnemyLifeMsg enemies[64];
             int nenemies = 0;
+            game::enemies::Pose enemy_pos[game::enemies::MaxPerMessage];
+            int nenemy_pos = 0;
+            u32 enemy_pos_area = 0;
             bool send_revived = false;
+            u16 send_heal = 0;
+            DownedOut downed[4];
+            int ndowned = 0;
             char gear[3][32];
             bool send_gear = false;
             WeaponPose weapons[MaxWeapons];
@@ -466,10 +516,25 @@ namespace coop::net {
                     g_GearPending = false;
                     send_gear = true;
                 }
+                if (g_Connected) {
+                    ndowned = g_DownedOutCount;
+                    std::memcpy(downed, g_DownedOut, sizeof(downed));
+                }
+                g_DownedOutCount = 0;
+                if (g_HealPending && g_Connected) {
+                    send_heal = g_HealPending > 0xffff ? 0xffff : static_cast<u16>(g_HealPending);
+                    g_HealPending = 0;
+                }
                 if (g_RevivedPending && g_Connected) {
                     send_revived = true;
                     g_RevivedPending = false;
                 }
+                if (g_EnemyPosCount && g_Connected) {
+                    std::memcpy(enemy_pos, g_EnemyPosOut, g_EnemyPosCount * sizeof(*enemy_pos));
+                    nenemy_pos = g_EnemyPosCount;
+                    enemy_pos_area = g_EnemyPosArea;
+                }
+                g_EnemyPosCount = 0;
                 while (g_EnemyCount > 0 && nenemies < 64 && g_Connected) {
                     enemies[nenemies++] = g_EnemyQueue[g_EnemyHead];
                     g_EnemyHead = (g_EnemyHead + 1) % EnemyQueueSize;
@@ -513,8 +578,31 @@ namespace coop::net {
                 for (auto& part : gear) w.Str(part);
                 if (!SendMsg(w)) return false;
             }
+            for (int i = 0; i < ndowned; i++) {
+                Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Downed);
+                w.U8(downed[i].state);
+                w.Bytes(downed[i].pos, 12);
+                w.U8(downed[i].left);
+                if (!SendMsg(w)) return false;
+            }
+            if (send_heal) {
+                Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Heal);
+                w.Bytes(&send_heal, 2);
+                if (!SendMsg(w)) return false;
+            }
             if (send_revived) {
                 Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Revived);
+                if (!SendMsg(w)) return false;
+            }
+            if (nenemy_pos) {
+                Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::EnemyPos);
+                w.Bytes(&enemy_pos_area, 4);
+                w.U8(static_cast<u8>(nenemy_pos));
+                for (int i = 0; i < nenemy_pos; i++) {
+                    w.Bytes(&enemy_pos[i].hash, 4);
+                    w.Bytes(enemy_pos[i].pos, 12);
+                    w.Bytes(&enemy_pos[i].rot_y, 4);
+                }
                 if (!SendMsg(w)) return false;
             }
             for (int i = 0; i < nenemies; i++) {
@@ -622,6 +710,8 @@ namespace coop::net {
                 game::combat::SetLogNearby(g_Config.autostart);
                 game::revive::SetTest(g_Config.test_revive);
                 game::revive::SetTestLife(g_Config.test_life);
+                game::research::SetTest(g_Config.test_research);
+                game::meals::SetTestLife(g_Config.test_heal);
                 game::weapons::SetTest(g_Config.test_bind);
                 game::items::SetTest(g_Config.test_drop);
                 game::SetKeyScript(g_Config.test_keys);
@@ -721,9 +811,31 @@ namespace coop::net {
         g_GearPending = true;
     }
 
+    void SendDowned(u8 state, const float* pos, u8 seconds_left) {
+        ScopedLock lock;
+        if (g_DownedOutCount == 4) g_DownedOutCount = 3; /* keep the newest */
+        DownedOut& d = g_DownedOut[g_DownedOutCount++];
+        d.state = state;
+        std::memcpy(d.pos, pos, sizeof(d.pos));
+        d.left = seconds_left;
+    }
+
+    void SendHeal(u16 quarters) {
+        ScopedLock lock;
+        g_HealPending += quarters;
+    }
+
     void SendRevived() {
         ScopedLock lock;
         g_RevivedPending = true;
+    }
+
+    void SendEnemyPoses(u32 area, const game::enemies::Pose* poses, int count) {
+        ScopedLock lock;
+        if (count > game::enemies::MaxPerMessage) count = game::enemies::MaxPerMessage;
+        std::memcpy(g_EnemyPosOut, poses, count * sizeof(*poses));
+        g_EnemyPosCount = count;
+        g_EnemyPosArea = area;
     }
 
     void SendEnemyLife(u32 area, u32 hash_id, s32 life) {

@@ -179,6 +179,15 @@ namespace coop::game::offsets {
     /* Linear velocity, from the position (Vec3f; y sat at the -64 m/s fall cap
        while Link was held in the air). */
     constexpr uintptr_t HavokPos_ToVelocity = 0xb0;
+    /* That position is inside an hkpRigidBody: its vtable is at -0x1c0
+       (main+0x1b87b20, shared by every rigid body), its hkpMotion at +0x150.
+       An enemy's body has the same vtable and sits exactly at the actor's
+       position; writing it moves the enemy (tested on a Bokoblin). No
+       pointer path from an actor (or its physics, Actor+0x578) to its body
+       was found within 3-4 levels, so bodies are found by scanning memory. */
+    constexpr uintptr_t HkRigidBody_Vtable = 0x1b87b20;
+    constexpr uintptr_t HkBody_Pos = 0x1c0; /* motion transform translation */
+    constexpr uintptr_t HkBody_Vel = 0x270; /* motion linear velocity */
     /* Player: the height a fall started at (fall damage), 1.6.0 offset. */
     constexpr uintptr_t Player_FallStartY = 0x20d0;
 }

@@ -20,6 +20,8 @@ namespace coop {
         char test_bind[64];   /* debug: "Weapon:Bone", bind that weapon to Link's bone */
         char test_keys[256];  /* debug: buttons to press once in the world, e.g. "Plus,L,L,A:300,Plus" */
         char test_drop[64];   /* debug: spawn this item at Link's feet as if dropped from the inventory */
+        int test_heal;        /* debug: once a partner is near, drop to this life (quarter hearts) to test shared meals */
+        int test_research;    /* debug: run a reverse-engineering search (research.cpp) */
         int test_life;        /* debug: drop to this life near a partner and let a real hit test the revive */
     };
 

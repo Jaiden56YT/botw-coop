@@ -43,6 +43,9 @@ func f32(b []byte, v float32) { binary.LittleEndian.PutUint32(b, math.Float32bit
 // When another player first reported a position (UnixNano), for timed gifts.
 var firstState atomic.Int64
 
+// Where a downed player is (set by the reader, used by -rescue).
+var rescueAt atomic.Value
+
 func main() {
 	addr := flag.String("addr", "127.0.0.1:7777", "relay address")
 	pw := flag.String("password", "test", "room password")
@@ -61,6 +64,11 @@ func main() {
 	still := flag.Bool("still", false, "stand still (at center + 6 m on x)")
 	bloody := flag.Bool("bloody", false, "host a Blood Moon tonight (WM_BloodyDay)")
 	gift := flag.String("gift", "", "weapon or item actor name to give every other player 15 s after one is first in the world (e.g. Weapon_Sword_001, Item_Fruit_A)")
+	enemyCircle := flag.String("enemy-circle", "", "HASH:X,Y,Z (hex hash): claim this placed enemy and send it walking a 3 m circle around X,Y,Z, 10 times a second")
+	heal := flag.Int("heal", 0, "if > 0: share a meal of this many quarter hearts with everyone every 20 s, once a player is in the world")
+	rescue := flag.Bool("rescue", false, "when a player goes down, walk over to them 3 s later (and stand 1 m away)")
+	jumpAt := flag.Int("jump-at", 0, "if > 0: after this many seconds, jump 1.5 km east (like fast travel)")
+	hurt := flag.Bool("hurt", false, "20 hearts, dropping to 2.5 hearts for 20 s every 40 s (for the low-hearts warning)")
 	ride := flag.Bool("ride", false, "report riding a horse (movement state 11)")
 	anims := flag.Bool("anims", false, "cycle the reported movement state (every one: stand, move, climb, swim, glide, jump, fall, horse, surf) every 5 s")
 	flag.Parse()
@@ -112,6 +120,22 @@ func main() {
 				log.Printf("player %d gave player %d: %s", body[0], body[1], body[4:])
 			case 33:
 				log.Printf("player %d went down and was revived (partner nearby)", body[0])
+			case 39:
+				if len(body) >= 15 {
+					x := math.Float32frombits(binary.LittleEndian.Uint32(body[2:]))
+					y := math.Float32frombits(binary.LittleEndian.Uint32(body[6:]))
+					z := math.Float32frombits(binary.LittleEndian.Uint32(body[10:]))
+					log.Printf("player %d down state %d at (%.1f, %.1f, %.1f), %d s left", body[0], body[1], x, y, z, body[14])
+					if body[1] == 1 && *rescue {
+						rescueAt.Store([3]float32{x, y, z})
+					} else if body[1] != 1 {
+						rescueAt.Store([3]float32{})
+					}
+				}
+			case 38:
+				if len(body) >= 3 {
+					log.Printf("player %d shared a meal: %d quarter hearts", body[0], binary.LittleEndian.Uint16(body[1:]))
+				}
 			case 32:
 				log.Printf("player %d: enemy %08x in area %08x now has life %d", body[0],
 					binary.LittleEndian.Uint32(body[5:]), binary.LittleEndian.Uint32(body[1:]),
@@ -133,6 +157,10 @@ func main() {
 	start := time.Now()
 	lastWorld := time.Time{}
 	lastGear := time.Time{}
+	lastEnemy := time.Time{}
+	lastHeal := time.Time{}
+	rescueSince := time.Time{}
+	jumped := false
 	flagsSent := *flagList == ""
 	enemySent := *enemy == ""
 	giftSent := *gift == ""
@@ -152,6 +180,22 @@ func main() {
 			speed = 0 // stand still so the actions are easy to see
 		}
 		a += speed / radius * dt
+		if v := rescueAt.Load(); v != nil {
+			if p := v.([3]float32); p == [3]float32{} {
+				rescueSince = time.Time{}
+			} else {
+				if rescueSince.IsZero() {
+					rescueSince = now
+				} else if now.Sub(rescueSince) > 3*time.Second {
+					c = [3]float32{p[0] - radius + 1, p[1], p[2]}
+				}
+			}
+		}
+		if *jumpAt > 0 && !jumped && time.Since(start) > time.Duration(*jumpAt)*time.Second {
+			jumped = true
+			c[0] += 1500
+			log.Printf("jumped 1.5 km east")
+		}
 		st := make([]byte, 44)
 		f32(st[0:], c[0]+float32(radius*math.Cos(a)))
 		f32(st[4:], c[1])
@@ -182,9 +226,45 @@ func main() {
 			area = crc32.ChecksumIEEE([]byte("CDungeonDungeon000"))
 		}
 		binary.LittleEndian.PutUint32(st[36:], area)
-		binary.LittleEndian.PutUint16(st[32:], 12)
-		binary.LittleEndian.PutUint16(st[34:], 12)
+		hp, maxHp := uint16(12), uint16(12)
+		if *hurt {
+			// 20 hearts; every 20 s: full, then 2.5 hearts.
+			maxHp, hp = 80, 80
+			if int(time.Since(start).Seconds()/20)%2 == 1 {
+				hp = 10
+			}
+		}
+		binary.LittleEndian.PutUint16(st[32:], hp)
+		binary.LittleEndian.PutUint16(st[34:], maxHp)
 		conn.Write(msg(20, st))
+		if fs := firstState.Load(); *heal > 0 && fs != 0 && time.Since(time.Unix(0, fs)) > 20*time.Second && now.Sub(lastHeal) >= 20*time.Second {
+			lastHeal = now
+			p := make([]byte, 2)
+			binary.LittleEndian.PutUint16(p, uint16(*heal))
+			conn.Write(msg(38, p))
+			log.Printf("shared a meal: %d quarter hearts", *heal)
+		}
+		if *enemyCircle != "" && now.Sub(lastEnemy) >= 100*time.Millisecond {
+			lastEnemy = now
+			hp := strings.SplitN(*enemyCircle, ":", 2)
+			h, _ := strconv.ParseUint(hp[0], 16, 32)
+			xyz := strings.Split(hp[1], ",")
+			var at [3]float32
+			for i := range at {
+				f, _ := strconv.ParseFloat(xyz[i], 32)
+				at[i] = float32(f)
+			}
+			ang := time.Since(start).Seconds() * 0.6
+			p := make([]byte, 9+20)
+			binary.LittleEndian.PutUint32(p[0:], crc32.ChecksumIEEE([]byte("MainField")))
+			p[4] = 1
+			binary.LittleEndian.PutUint32(p[5:], uint32(h))
+			f32(p[9:], at[0]+float32(3*math.Cos(ang)))
+			f32(p[13:], at[1])
+			f32(p[17:], at[2]+float32(3*math.Sin(ang)))
+			f32(p[21:], float32(math.Atan2(-math.Sin(ang), math.Cos(ang))))
+			conn.Write(msg(37, p))
+		}
 		if *gear != "" && time.Since(lastGear) > 5*time.Second {
 			lastGear = time.Now()
 			parts := strings.SplitN(*gear+",,", ",", 4)

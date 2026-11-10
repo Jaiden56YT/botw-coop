@@ -34,6 +34,9 @@ namespace coop::net {
         Revived      = 33, /* any -> all: (no payload) I went down and a partner's presence revived me */
         Gear         = 34, /* any -> all: 3 strings: worn head, upper, lower armor actor names ("" = none) */
         Gift         = 36, /* any -> all: u8 recipient id, string weapon actor name */
+        Downed       = 39, /* any -> all: u8 state (1 down, 0 back up, 2 out of time), f32 pos[3], u8 seconds left */
+        Heal         = 38, /* any -> all: u16 quarter hearts: I just ate this much healing near you */
+        EnemyPos     = 37, /* any -> all: u32 area, u8 count, then per enemy: u32 HashId, f32 pos[3], f32 rot_y */
         Weapons      = 35, /* any -> all: u8 count, then per weapon: string name, string bone, f32[12] offset from the bone */
     };
 

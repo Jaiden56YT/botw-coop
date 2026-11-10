@@ -51,6 +51,7 @@ namespace coop::game::warp {
         s64 g_HopSince = 0;
         s64 g_LoadedAt = 0; /* the current hop's area loaded; held here a moment */
         int g_Hops = 0;
+        int g_Retries = 0;
         constexpr s64 SettleMs = 500;
 
         /* Link's Havok position (see offsets.hpp), or null. */
@@ -147,10 +148,27 @@ namespace coop::game::warp {
             g_GuardUntil = now + 3000;
             float me[3];
             if (!GetLocalPlayerPos(me)) return;
+            bool sky = g_Hop[1] == SkyHeight;
             if (g_LoadedAt) {
-                if (g_Hop[1] == SkyHeight) Place(g_Hop); /* hold him up here while things catch up */
+                if (sky) Place(g_Hop); /* hold him up here while things catch up */
                 if (now - g_LoadedAt < SettleMs) return;
                 std::memcpy(me, g_Hop, sizeof(me));
+            } else {
+                /* Right after a placement his position can still read as the
+                   old spot for a tick: only judge the hop once he's on it. */
+                float hx = me[0] - g_Hop[0], hz = me[2] - g_Hop[2];
+                if (hx * hx + hz * hz > 2.0f * 2.0f) {
+                    if (now - g_HopSince > 1000 && g_Retries < 5) {
+                        g_Retries++;
+                        Place(g_Hop);
+                        g_HopSince = now;
+                    } else if (g_Retries >= 5 && now - g_HopSince > 1000) {
+                        Logging.Log("[coop] warp: hop %d didn't take", g_Hops);
+                        notify::Show("Warp stopped");
+                        g_Active = false;
+                    }
+                    return;
+                }
             }
             float dx = me[0] - g_Hop[0], dy = me[1] - g_Hop[1], dz = me[2] - g_Hop[2];
             bool loaded = g_LoadedAt || dx * dx + dy * dy + dz * dz > 0.05f * 0.05f;
@@ -158,7 +176,7 @@ namespace coop::game::warp {
             if (!loaded) {
                 if (now - g_HopSince > HopTimeoutMs) {
                     Logging.Log("[coop] warp: hop %d didn't load in %lld s", g_Hops, HopTimeoutMs / 1000);
-                    if (g_Hop[1] != SkyHeight) {
+                    if (!sky) {
                         Finish(true); /* he's there; he just hasn't moved */
                     } else {
                         notify::Show("Warp stopped: the area didn't load");
@@ -167,7 +185,12 @@ namespace coop::game::warp {
                 }
                 return;
             }
-            if (!g_LoadedAt && g_Hop[1] == SkyHeight) {
+            if (!sky) { /* the last hop: he's by the partner */
+                Logging.Log("[coop] warp: arrived after %d hop(s)", g_Hops);
+                Finish(true);
+                return;
+            }
+            if (!g_LoadedAt) {
                 g_LoadedAt = now;
                 Logging.Log("[coop] warp: hop %d loaded after %lld ms", g_Hops, now - g_HopSince);
                 return;
@@ -179,15 +202,10 @@ namespace coop::game::warp {
                 g_Active = false;
                 return;
             }
-            float tx = to[0] - me[0], tz = to[2] - me[2];
-            if (tx * tx + tz * tz < 30.0f * 30.0f && g_Hop[1] != SkyHeight) { /* landed by the partner */
-                Logging.Log("[coop] warp: arrived after %d hop(s)", g_Hops);
-                Finish(true);
-                return;
-            }
             bool last = NextHop(g_Hop, to, g_Hop);
             Place(g_Hop);
             g_HopSince = now;
+            g_Retries = 0;
             g_Hops++;
             Logging.Log("[coop] warp: hop %d to (%.0f, %.0f, %.0f)%s", g_Hops, g_Hop[0], g_Hop[1], g_Hop[2], last ? ", last" : "");
         }
@@ -237,6 +255,7 @@ namespace coop::game::warp {
             if (!Place(g_Hop)) return;
             g_Active = true;
             g_LoadedAt = 0;
+            g_Retries = 0;
             if (s32* life = LifePtr()) g_StartLife = *life;
             g_GuardUntil = now + 3000;
             g_HopSince = now;
@@ -248,6 +267,8 @@ namespace coop::game::warp {
             if (!last) notify::Show("Warping to %s (%.1f km)...", pick->name, dist / 1000.0f);
         }
     }
+
+    bool PlaceLink(const float (&pos)[3]) { return Place(pos); }
 
     void Tick(s64 now) {
         if (g_Active) Step(now);
