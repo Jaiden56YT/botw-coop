@@ -46,7 +46,7 @@ Up to four players can play together (the relay and the mod both handle it). Che
 
 Tested with a scripted fake partner (`tools/fakehost`) and with **two real games** on one Mac: both connected through the relay, each showed the other's puppet and map marker, the guest followed the host's time, a late joiner got 1,327 done flags, and when one game dropped off it reconnected by itself while the other took over as host.
 
-Not yet:
+Not yet (the full list, with priorities and how each could be done, is in [docs/REMAINING.md](docs/REMAINING.md)):
 - enemies' animations and attacks (only where they are and which way they face is shared, so a copy may swing at a different moment)
 - name tags, and hearts always on screen (for now the banner warns when a partner is low)
 - cutscene watch mode, fast-travel voting; cooked dishes can't be handed over (shared meals heal instead), and buffs from food aren't shared
