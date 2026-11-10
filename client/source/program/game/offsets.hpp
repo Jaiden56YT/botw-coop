@@ -105,6 +105,19 @@ namespace coop::game::offsets {
        "Animal_Insect_F", "FairyResurrection"). */
     constexpr uintptr_t Player_TryRevive = 0xcead24;
 
+    /* ModelBindInfo: keeps an actor on a bone of another actor (how Link's
+       weapons follow him). Recipe from 0x96b28c: construct, acquire the parent
+       link at +8, set the bone name at +0x28 and index 0xffff at +0x60, then
+       Actor::setModelBindInfo. calc (0x1097300) resolves the bone by name. */
+    constexpr uintptr_t ModelBindInfo_Ctor = 0x1096f68;    /* (info) */
+    constexpr uintptr_t ModelBindInfo_Calc = 0x1097300;    /* bool (info, child actor): writes the child's mMtx */
+    constexpr uintptr_t ModelBindInfo_BoneName = 0x28;     /* const char* */
+    constexpr uintptr_t ModelBindInfo_BoneIdx = 0x60;      /* u16 unit, u16 bone; 0xffff = look up */
+    constexpr uintptr_t ModelBindInfo_Offset = 0x68;       /* Matrix34f */
+    constexpr uintptr_t ActorLink_Acquire = 0x1517e60;     /* (link, BaseProc*, bool) */
+    constexpr uintptr_t Actor_SetModelBindInfo = 0x1533750; /* (actor, info): Actor+0x4d0 */
+    constexpr uintptr_t Actor_ClearModelBindInfo = 0x1533760; /* (actor) */
+
     /* ksys::world::Manager (GOT slot from the weather event action at 0x651a78).
        Field offsets match the decomp: mWeatherTypeTimer 0x794 is what the setter writes. */
     constexpr uintptr_t Got_WorldMgrInstance = 0x1d66460;

@@ -18,6 +18,8 @@
 #include "combat.hpp"
 #include "revive.hpp"
 #include "gear.hpp"
+#include "items.hpp"
+#include "weapons.hpp"
 
 namespace coop::game {
 
@@ -63,6 +65,9 @@ namespace coop::game {
             float game_pos[3];    /* last position the game itself put it at */
             s64 report_ms;
             const char* anim;     /* animation sequence currently playing */
+            s64 anim_retry_at;    /* when to ask again for one that failed to start */
+            int anim_fails;
+            const char* anim_want;
             float speed, vspeed;  /* smoothed horizontal / vertical speed, m/s */
             s64 last_ms;
             bool hidden;          /* parked out of sight: the player is in another area */
@@ -73,6 +78,17 @@ namespace coop::game {
             const char* gear_anim[3];
             uintptr_t parked[6];   /* gear taken off, kept out of sight for reuse */
             char parked_name[6][64];
+            /* Carried weapons: CoopWeapon_<model> actors bound to the puppet's bones. */
+            net::WeaponPose want_weapons[net::MaxWeapons];
+            int want_weapon_count;
+            uintptr_t weapon[net::MaxWeapons];
+            char weapon_actor[net::MaxWeapons][64];
+            weapons::Bind weapon_bind[net::MaxWeapons];
+            net::WeaponPose weapon_pose[net::MaxWeapons];
+            /* A horse under them while they ride. */
+            uintptr_t horse;
+            const char* horse_anim;
+            bool horse_shown;
         };
 
         constexpr u8 EchoId = 255;
@@ -243,9 +259,21 @@ namespace coop::game {
             else if (g.speed < 6.5f) want = "Run";
             else want = "Dash";
 
-            if (want != g.anim) {
-                g.anim = want;
-                PlayAS(g.actor, want, 0);
+            /* A sequence can fail to start while its animation is still loading:
+               keep asking until it plays. */
+            if (want != g.anim && now >= g.anim_retry_at) {
+                if (PlayAS(g.actor, want, 0)) {
+                    if (g.anim_fails > 0)
+                        Logging.Log("[coop] player %d: puppet plays '%s' after %d tries", g.peer_id, want, g.anim_fails + 1);
+                    g.anim = want;
+                    g.anim_fails = 0;
+                } else {
+                    if (g.anim_want != want) g.anim_fails = 0;
+                    g.anim_want = want;
+                    g.anim_retry_at = now + 200;
+                    if (++g.anim_fails == 50)
+                        Logging.Log("[coop] player %d: puppet still can't play '%s'", g.peer_id, want);
+                }
             }
         }
 
@@ -308,6 +336,124 @@ namespace coop::game {
                 if (g.anim && g.gear_anim[s] != g.anim && PlayAS(g.gear[s], g.anim, 0)) g.gear_anim[s] = g.anim;
             }
             (void)now;
+        }
+
+        void ParkWeapon(Ghost& g, int i) {
+            if (!g.weapon[i]) return;
+            float away[3] = {g.shown[0], -2000.0f, g.shown[2]};
+            bool known = false;
+            if (IsActorAlive(ActorCreator(), g.weapon[i], &known) && known) {
+                reinterpret_cast<void (*)(uintptr_t)>(Base() + offsets::Actor_ClearModelBindInfo)(g.weapon[i]);
+                Place(g.weapon[i], away, 0);
+            }
+            g.weapon[i] = 0;
+            g.weapon_actor[i][0] = '\0';
+        }
+
+        /* Spawns, binds and moves the partner's weapons onto the puppet's bones. */
+        void DriveWeapons(Ghost& g) {
+            for (int i = 0; i < net::MaxWeapons; i++) {
+                bool want = i < g.want_weapon_count;
+                char actor_name[64] = {};
+                if (want && !weapons::WeaponActorFor(g.want_weapons[i].name, actor_name)) want = false;
+                if (!want) {
+                    ParkWeapon(g, i);
+                    continue;
+                }
+                const net::WeaponPose& p = g.want_weapons[i];
+                if (std::strcmp(actor_name, g.weapon_actor[i]) != 0) {
+                    ParkWeapon(g, i);
+                    g.weapon[i] = SpawnNamed(actor_name, g.shown, g.shown_rot);
+                    std::memcpy(g.weapon_actor[i], actor_name, sizeof(actor_name));
+                    g.weapon_pose[i].bone[0] = '\0'; /* force a bind */
+                    if (g.weapon[i]) Logging.Log("[coop] player %d carries %s", g.peer_id, p.name);
+                }
+                if (!g.weapon[i]) continue;
+                bool rebind = std::strcmp(p.bone, g.weapon_pose[i].bone) != 0 ||
+                              std::memcmp(p.offset, g.weapon_pose[i].offset, sizeof(p.offset)) != 0;
+                if (rebind) {
+                    weapons::BindTo(g.weapon_bind[i], g.weapon[i], g.actor, p.bone, p.offset);
+                    g.weapon_pose[i] = p;
+                }
+                weapons::Update(g.weapon_bind[i], g.weapon[i]);
+            }
+        }
+
+        /* Where the rider is on the horse. Horse_Link.bfres's Saddle_Root bone sits
+           2.10 m above the horse's origin and 0.05 m forward (rest pose), and
+           the riding animations keep Link's hips on his origin, so a rider's
+           position is the saddle. */
+        constexpr float SaddleHeight = 2.10f;
+        constexpr float SaddleForward = 0.05f;
+
+        void DriveHorse(Ghost& g, u32 category) {
+            bool riding = (category & 0xFF) == anim::Horse;
+            if (!riding) {
+                if (g.horse && g.horse_shown) {
+                    float away[3] = {g.shown[0], -2000.0f, g.shown[2]};
+                    bool known = false;
+                    if (IsActorAlive(ActorCreator(), g.horse, &known) && known) Place(g.horse, away, 0);
+                    g.horse_shown = false;
+                }
+                return;
+            }
+            float at[3] = {g.shown[0] - std::sin(g.shown_rot) * SaddleForward, g.shown[1] - SaddleHeight,
+                           g.shown[2] - std::cos(g.shown_rot) * SaddleForward};
+            if (g.horse) {
+                bool known = false;
+                if (!IsActorAlive(ActorCreator(), g.horse, &known) && known) g.horse = 0;
+            }
+            if (!g.horse) {
+                g.horse = SpawnNamed("CoopHorse", at, g.shown_rot);
+                g.horse_anim = nullptr;
+                if (!g.horse) return;
+                Logging.Log("[coop] player %d is riding: horse %p", g.peer_id, reinterpret_cast<void*>(g.horse));
+            }
+            g.horse_shown = true;
+            Place(g.horse, at, g.shown_rot);
+            /* Gait from the rider's speed (m/s). */
+            const char* want = g.speed < 0.5f ? "Wait" : g.speed < 3.0f ? "Move_Gear1" : g.speed < 7.0f ? "Move_Gear2"
+                             : g.speed < 12.0f ? "Move_Gear3" : "Move_Gear4";
+            if (want != g.horse_anim && PlayAS(g.horse, want, 0)) g.horse_anim = want;
+        }
+
+        /* Debug: while the local Link rides, log where he is relative to his
+           horse (to measure SaddleHeight). */
+        s64 g_MountLogAt = 0;
+        void LogMountedOffset(s64 now) {
+            if ((LocalAnimCategory() & 0xFF) != anim::Horse || now < g_MountLogAt) return;
+            g_MountLogAt = now + 2000;
+            float me[3];
+            if (!GetLocalPlayerPos(me)) return;
+            uintptr_t creator = ActorCreator();
+            if (!creator) return;
+            uintptr_t cs = creator + offsets::ActorCreator_ActorListCS;
+            if (!reinterpret_cast<bool (*)(uintptr_t)>(Base() + offsets::CriticalSection_TryLock)(cs)) return;
+            uintptr_t head = creator + offsets::ActorCreator_ActorList;
+            s32 node_off = Read<s32>(creator + offsets::ActorCreator_ActorListOffset);
+            uintptr_t best = 0;
+            float best_d = 25.0f;
+            int guard = 0;
+            for (uintptr_t node = Read<uintptr_t>(head + 8); node != head && node != 0 && guard < 20000; guard++) {
+                uintptr_t a = node - node_off;
+                node = Read<uintptr_t>(node + 8);
+                const char* name = Read<const char*>(a + offsets::BaseProc_NameStr);
+                if (!name || std::strncmp(name, "GameRomHorse", 12) != 0) continue;
+                const float* m = reinterpret_cast<const float*>(a + offsets::Actor_Mtx);
+                float dx = m[3] - me[0], dy = m[7] - me[1], dz = m[11] - me[2];
+                float d = dx * dx + dy * dy + dz * dz;
+                if (d < best_d) { best_d = d; best = a; }
+            }
+            if (best) {
+                const float* m = reinterpret_cast<const float*>(best + offsets::Actor_Mtx);
+                float dx = me[0] - m[3], dy = me[1] - m[7], dz = me[2] - m[11];
+                /* Along the horse's forward (its local z axis) and right (x axis). */
+                float fwd = dx * m[2] + dy * m[6] + dz * m[10];
+                float right = dx * m[0] + dy * m[4] + dz * m[8];
+                Logging.Log("[coop] riding: Link is %.3f m above his horse, %.3f m forward, %.3f m right (%s)", dy, fwd,
+                            right, Read<const char*>(best + offsets::BaseProc_NameStr));
+            }
+            reinterpret_cast<void (*)(uintptr_t)>(Base() + offsets::CriticalSection_Unlock)(cs);
         }
 
         void Drive(Ghost& g, const float (&target)[3], float target_rot, s64 now, u32 category) {
@@ -375,6 +521,8 @@ namespace coop::game {
             std::memcpy(g.written, g.shown, sizeof(g.written));
             Animate(g, before, now, category);
             DriveGear(g, now);
+            DriveWeapons(g);
+            DriveHorse(g, category);
         }
 
         bool LocalPlayer(uintptr_t* actor_out, float (&pos)[3], float* rot) {
@@ -416,7 +564,7 @@ namespace coop::game {
                 const Step steps[] = {
                     {1ull << 2, 150, "jump (X)"},     {1ull << 3, 150, "attack (Y)"}, {1ull << 3, 150, "attack (Y)"},
                     {1ull << 3, 150, "attack (Y)"},   {1ull << 8, 2000, "guard (ZL)"}, {1ull << 9, 2500, "bow (ZR)"},
-                    {1ull << 3, 2500, "charge (hold Y)"}, {1ull << 7, 150, "throw (R)"},
+                    {1ull << 3, 2500, "charge (hold Y)"}, {1ull << 7, 900, "throw (hold R)"},
                 };
                 int i = g_ActionStep++;
                 if (i < static_cast<int>(sizeof(steps) / sizeof(steps[0]))) {
@@ -448,7 +596,18 @@ namespace coop::game {
                     float orbit = (now % 12000) / 12000.0f * 6.2831853f;
                     float c = std::cos(pick->rot + orbit), s = std::sin(pick->rot + orbit);
                     float target[3] = {pick->pos[0] + c * 2.5f, pick->pos[1], pick->pos[2] - s * 2.5f};
-                    if (Ghost* g = FindOrAdd(EchoId)) Drive(*g, target, pick->rot + orbit + 1.5708f, now, 0);
+                    if (Ghost* g = FindOrAdd(EchoId)) {
+                        /* Echo carries our own weapons, to check them with one game. */
+                        g->want_weapon_count = weapons::LocalPoses(g->want_weapons);
+                        char worn[gear::Slots][gear::NameLen];
+                        gear::LocalWorn(worn);
+                        for (int s = 0; s < gear::Slots; s++) {
+                            char want[64] = {};
+                            if (worn[s][0] && !gear::GearActorFor(worn[s], want)) want[0] = '\0';
+                            std::memcpy(g->want_gear[s], want, sizeof(want));
+                        }
+                        Drive(*g, target, pick->rot + orbit + 1.5708f, now, 0);
+                    }
                 }
             }
 
@@ -474,6 +633,11 @@ namespace coop::game {
                             Place(g.actor, away, 0);
                             for (uintptr_t piece : g.gear)
                                 if (piece) Place(piece, away, 0);
+                            for (int wi = 0; wi < net::MaxWeapons; wi++) ParkWeapon(g, wi);
+                            if (g.horse) {
+                                Place(g.horse, away, 0);
+                                g.horse_shown = false;
+                            }
                             g.hidden = true;
                             Logging.Log("[coop] player %d is in another area; hiding them", g.peer_id);
                         }
@@ -491,6 +655,8 @@ namespace coop::game {
                         if (p.gear[s][0] && !gear::GearActorFor(p.gear[s], want)) want[0] = '\0';
                         std::memcpy(g->want_gear[s], want, sizeof(want));
                     }
+                    std::memcpy(g->want_weapons, p.weapons, sizeof(p.weapons));
+                    g->want_weapon_count = p.weapon_count;
                     Drive(*g, target, p.state.rot_y, now, p.state.anim_hash);
                 }
             }
@@ -505,6 +671,8 @@ namespace coop::game {
                     bool known = false;
                     if (IsActorAlive(ActorCreator(), g.actor, &known) && known) Place(g.actor, away, 0);
                     for (int sl = 0; sl < 3; sl++) ParkGear(g, sl);
+                    for (int wi = 0; wi < net::MaxWeapons; wi++) ParkWeapon(g, wi);
+                    if (g.horse && IsActorAlive(ActorCreator(), g.horse, &known) && known) Place(g.horse, away, 0);
                     g.used = false;
                     g.actor = 0;
                 }
@@ -519,6 +687,8 @@ namespace coop::game {
             return actor ? Read<uintptr_t>(actor + offsets::Actor_ASList) : 0;
         }
     }
+
+    uintptr_t SpawnActor(const char* name, const float (&pos)[3], float rot_y) { return SpawnNamed(name, pos, rot_y); }
 
     /* Sees every animation sequence the game starts. Used to learn which
        sequence the local player is in (debug logging for now). */
@@ -579,6 +749,10 @@ namespace coop::game {
                 combat::Tick(NowMs());
                 revive::Tick(NowMs());
                 gear::Tick(NowMs());
+                weapons::Tick(NowMs());
+                items::Tick(NowMs());
+                LogMountedOffset(NowMs());
+                KeyScriptTick(NowMs());
                 g_InTick.store(false);
             }
             return result;

@@ -15,6 +15,9 @@ namespace coop::game::gear {
     /* Game thread, every tick: notices what Link is wearing and sends changes. */
     void Tick(s64 now_ms);
 
+    /* What Link wears now (as last sent): armor actor names, "" = none. */
+    void LocalWorn(char (&out)[Slots][NameLen]);
+
     /* The gear actor to show for an armor actor name ("Armor_151_Upper" ->
        "CoopGear_Armor_116_Upper"), or false if unknown. */
     bool GearActorFor(const char* armor, char (&out)[64]);

@@ -3,7 +3,7 @@
 //
 //	go run ./tools/fakehost -addr 127.0.0.1:7777 -password test -center -1060,250,1830
 //
-// It sends the world clock (fixed time, default 12:00) every second and a
+// It sends the world clock (starting at -time, running at game speed) every second and a
 // player walking a 6 m circle around -center at 30 Hz.
 package main
 
@@ -55,7 +55,10 @@ func main() {
 	actions := flag.Bool("actions", false, "cycle the reported action (attack 1-3, finisher, spin, charge, bow aim, bow shoot, throw aim, throw, guard) every 3 s while standing")
 	gear := flag.String("gear", "", "HEAD,UPPER,LOWER armor actor names the fake player wears (e.g. Armor_001_Head,Armor_151_Upper,Armor_155_Lower), sent every 5 s")
 	still := flag.Bool("still", false, "stand still (at center + 6 m on x)")
-	anims := flag.Bool("anims", false, "cycle the reported movement state (stand, move, climb, swim, glide, horse, surf) every 5 s")
+	bloody := flag.Bool("bloody", false, "host a Blood Moon tonight (WM_BloodyDay)")
+	gift := flag.String("gift", "", "weapon or item actor name to give every other player 15 s after joining (e.g. Weapon_Sword_001, Item_Fruit_A)")
+	ride := flag.Bool("ride", false, "report riding a horse (movement state 11)")
+	anims := flag.Bool("anims", false, "cycle the reported movement state (every one: stand, move, climb, swim, glide, jump, fall, horse, surf) every 5 s")
 	flag.Parse()
 
 	var c [3]float32
@@ -101,6 +104,8 @@ func main() {
 				log.Printf("%s joined", body[3:])
 			case 31:
 				log.Printf("player %d shared flag %s", body[0], body[4:])
+			case 36:
+				log.Printf("player %d gave player %d: %s", body[0], body[1], body[4:])
 			case 33:
 				log.Printf("player %d went down and was revived (partner nearby)", body[0])
 			case 32:
@@ -125,6 +130,7 @@ func main() {
 	lastGear := time.Time{}
 	flagsSent := *flagList == ""
 	enemySent := *enemy == ""
+	giftSent := *gift == ""
 	tick := time.NewTicker(33 * time.Millisecond)
 	const radius = 6.0
 	a := 0.0
@@ -149,6 +155,9 @@ func main() {
 		f32(st[12:], float32(math.Atan2(-math.Sin(a), math.Cos(a))))
 		f32(st[16:], float32(-speed*math.Sin(a)))
 		f32(st[24:], float32(speed*math.Cos(a)))
+		if *ride {
+			binary.LittleEndian.PutUint32(st[28:], 11)
+		}
 		if *actions {
 			// Standing (1) with anim::Action in bits 8-15, 1..11.
 			act := uint32(int(time.Since(start).Seconds()/3)%11 + 1)
@@ -157,8 +166,9 @@ func main() {
 			f32(st[24:], 0)
 		}
 		if *anims {
-			// anim::Category values: 1 Wait, 2 Move, 3 Climb, 5 Swim, 8 Glide, 11 Horse, 12 Surf
-			cycle := []uint32{1, 2, 3, 5, 8, 11, 12}
+			// anim::Category values: 1 Wait, 2 Move, 3 Climb, 4 ClimbWait, 5 Swim, 6 SwimWait,
+			// 7 SwimDash, 8 Glide, 9 Jump, 10 Fall, 11 Horse, 12 Surf
+			cycle := []uint32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 			binary.LittleEndian.PutUint32(st[28:], cycle[int(time.Since(start).Seconds()/5)%len(cycle)])
 		}
 		// map_area: the mod's area id, CRC32 of the stage type (+ name off the overworld).
@@ -181,6 +191,16 @@ func main() {
 				p = append(p, part...)
 			}
 			conn.Write(msg(34, p))
+		}
+		if !giftSent && time.Since(start) > 15*time.Second {
+			giftSent = true
+			for to := 1; to <= 4; to++ {
+				p := []byte{byte(to), 0, 0}
+				binary.LittleEndian.PutUint16(p[1:], uint16(len(*gift)))
+				p = append(p, *gift...)
+				conn.Write(msg(36, p))
+			}
+			log.Printf("gave everyone %s", *gift)
 		}
 		if !enemySent && time.Since(start) > 15*time.Second {
 			enemySent = true
@@ -207,11 +227,22 @@ func main() {
 		}
 		if time.Since(lastWorld) > time.Second {
 			lastWorld = time.Now()
-			w := make([]byte, 8, 10)
-			f32(w, float32(*clock))
+			w := make([]byte, 8, 15)
+			// The clock runs at game speed: 1 in-game minute per second (0.25 degrees).
+			f32(w, float32(math.Mod(*clock+0.25*time.Since(start).Seconds(), 360)))
 			binary.LittleEndian.PutUint32(w[4:], 7)
-			if *weather >= 0 {
-				w = append(w, byte(*weather), byte(*climate))
+			if *weather >= 0 || *bloody {
+				wb := byte(0xFF)
+				if *weather >= 0 {
+					wb = byte(*weather)
+				}
+				w = append(w, wb, byte(*climate))
+			}
+			if *bloody {
+				t := make([]byte, 4)
+				binary.LittleEndian.PutUint32(t, math.Float32bits(7*24*60+60)) // past 7 days
+				w = append(w, 1)
+				w = append(w, t...)
 			}
 			conn.Write(msg(30, w))
 			ping := make([]byte, 8)

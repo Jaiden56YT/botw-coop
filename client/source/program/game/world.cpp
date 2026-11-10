@@ -15,6 +15,11 @@ namespace coop::game {
     namespace {
         gdt::Handle g_TimeH = gdt::InvalidHandle;
         gdt::Handle g_DaysH = gdt::InvalidHandle;
+        gdt::Handle g_BloodyDayH = gdt::InvalidHandle;
+        gdt::Handle g_BloodyTimerH = gdt::InvalidHandle;
+        /* Blood Moon state from the host (network thread writes). */
+        std::atomic<u32> g_PendingBloodyDay{0xFF};
+        std::atomic<u32> g_PendingBloodyTimer{0};
         s64 g_LastSendMs = 0;
         s64 g_LastHandleMs = 0;
 
@@ -41,6 +46,8 @@ namespace coop::game {
             if (g_TimeH == gdt::InvalidHandle || now - g_LastHandleMs > 5000) {
                 g_TimeH = gdt::F32Handle("WM_Time");
                 g_DaysH = gdt::S32Handle("WM_NumberOfDays");
+                g_BloodyDayH = gdt::BoolHandle("WM_BloodyDay");
+                g_BloodyTimerH = gdt::F32Handle("WM_BloodyMoonTimer");
                 g_LastHandleMs = now;
             }
             return g_TimeH != gdt::InvalidHandle;
@@ -97,6 +104,10 @@ namespace coop::game {
     }
 
     void OnHostWorldState(const WorldState& state) {
+        g_PendingBloodyDay.store(state.bloody_day);
+        u32 tb;
+        __builtin_memcpy(&tb, &state.bloody_timer, 4);
+        g_PendingBloodyTimer.store(tb);
         if (state.weather < 9)
             g_PendingWeather.store(state.weather | (static_cast<u32>(state.climate) << 8) | 0x10000);
         else
@@ -119,7 +130,10 @@ namespace coop::game {
             if (!gdt::GetF32(g_TimeH, &s.time)) return;
             gdt::GetS32(g_DaysH, &s.days);
             if (!LocalWeather(&s.weather, &s.climate)) s.weather = 0xFF;
-            net::SendWorldState(s.time, s.days, s.weather, s.climate);
+            bool bloody = false;
+            s.bloody_day = gdt::GetBool(g_BloodyDayH, &bloody) ? (bloody ? 1 : 0) : 0xFF;
+            if (!gdt::GetF32(g_BloodyTimerH, &s.bloody_timer)) s.bloody_day = 0xFF;
+            net::SendWorldState(s.time, s.days, s.weather, s.climate, s.bloody_day, s.bloody_timer);
             if (now - g_LastWeatherLog > 30000) {
                 g_LastWeatherLog = now;
                 Logging.Log("[coop] world: hosting weather %d in climate %d", s.weather, s.climate);
@@ -157,6 +171,24 @@ namespace coop::game {
                     Logging.Log("[coop] world: following the host's weather %d (climate %d)", want_weather, want_climate);
                 }
             }
+        }
+
+        /* Blood Moon: follow the host's timer and bloody day, so it rises the
+           same night for everyone (time is shared too). */
+        u32 want_bloody = g_PendingBloodyDay.load();
+        if (want_bloody <= 1) {
+            u32 tb = g_PendingBloodyTimer.load();
+            float want_timer;
+            __builtin_memcpy(&want_timer, &tb, 4);
+            bool have = false;
+            float have_timer = 0;
+            gdt::GetBool(g_BloodyDayH, &have);
+            gdt::GetF32(g_BloodyTimerH, &have_timer);
+            if (have != (want_bloody == 1)) {
+                gdt::SetBool(g_BloodyDayH, want_bloody == 1);
+                Logging.Log("[coop] world: Blood Moon tonight: %s (the host's)", want_bloody == 1 ? "yes" : "no");
+            }
+            if (std::fabs(have_timer - want_timer) > 360.0f) gdt::SetF32(g_BloodyTimerH, want_timer);
         }
 
         if (!g_Pending.exchange(false)) return;

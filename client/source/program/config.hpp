@@ -15,8 +15,12 @@ namespace coop {
         char test_spawn[256]; /* debug: actors spawned once in a row in front of Link */
         char test_flag[64];   /* debug: progress flag set locally once connected */
         bool test_move;       /* debug: move the local Link and log its animations */
-        bool test_menu;
-        bool test_revive;     /* debug: once a partner is near, set life to 0 and run the revive check */       /* debug: open the pause menu after a partner's reward */
+        bool test_menu;       /* debug: open the pause menu after a partner's reward */
+        bool test_revive;     /* debug: once a partner is near, set life to 0 and run the revive check */
+        char test_bind[64];   /* debug: "Weapon:Bone", bind that weapon to Link's bone */
+        char test_keys[256];  /* debug: buttons to press once in the world, e.g. "Plus,L,L,A:300,Plus" */
+        char test_drop[64];   /* debug: spawn this item at Link's feet as if dropped from the inventory */
+        int test_life;        /* debug: drop to this life near a partner and let a real hit test the revive */
     };
 
     /* Loads sd:/botw-coop/config.ini (on Ryujinx: <Ryujinx dir>/sdcard/botw-coop/config.ini).

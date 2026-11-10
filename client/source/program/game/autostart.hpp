@@ -15,6 +15,12 @@ namespace coop::game {
        for `ms` milliseconds. */
     void PressButtons(u64 mask, int ms);
 
+    /* Debug: presses a comma-separated button list once Link is in the world,
+       one every 1.2 s ("A", "B", "X", "Y", "L", "R", "ZL", "ZR", "Plus", "Minus",
+       "Left", "Up", "Right", "Down"; "R:900" holds R for 900 ms). */
+    void SetKeyScript(const char* script);
+    void KeyScriptTick(s64 now_ms);
+
     /* Test helper: holds the left stick at (x, y), each -32767..32767, for `ms`. */
     void HoldStick(s32 x, s32 y, int ms);
 }

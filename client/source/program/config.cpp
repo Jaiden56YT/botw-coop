@@ -55,6 +55,14 @@ namespace coop {
             else if (is("test_move")) out.test_move = IsTrue(val, vlen);
             else if (is("test_menu")) out.test_menu = IsTrue(val, vlen);
             else if (is("test_revive")) out.test_revive = IsTrue(val, vlen);
+            else if (is("test_bind")) Copy(out.test_bind, sizeof(out.test_bind), val, vlen);
+            else if (is("test_keys")) Copy(out.test_keys, sizeof(out.test_keys), val, vlen);
+            else if (is("test_drop")) Copy(out.test_drop, sizeof(out.test_drop), val, vlen);
+            else if (is("test_life")) {
+                char tmp[8];
+                Copy(tmp, sizeof(tmp), val, vlen);
+                out.test_life = std::atoi(tmp);
+            }
             else if (is("port")) {
                 char tmp[8];
                 Copy(tmp, sizeof(tmp), val, vlen);
@@ -149,6 +157,10 @@ namespace coop {
         out.test_move = false;
         out.test_menu = false;
         out.test_revive = false;
+        out.test_bind[0] = '\0';
+        out.test_keys[0] = '\0';
+        out.test_drop[0] = '\0';
+        out.test_life = 0;
 
         bool from_file = ReadConfigFile(out);
         if (out.name[0] == '\0') UseProfileName(out);

@@ -11,6 +11,9 @@ namespace coop::game {
         bool test_move;       /* debug: walk/run/jump the local Link and log its animations */
     };
 
+    /* Spawns an actor by name at a position (game thread). 0 on failure. */
+    uintptr_t SpawnActor(const char* name, const float (&pos)[3], float rot_y);
+
     /* Hooks the game so remote players are shown as ghost actors that follow
        their reported positions. Call once from startup. */
     void InstallGhosts();

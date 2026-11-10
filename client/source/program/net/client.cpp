@@ -16,6 +16,8 @@
 #include "../game/progress.hpp"
 #include "../game/combat.hpp"
 #include "../game/revive.hpp"
+#include "../game/weapons.hpp"
+#include "../game/items.hpp"
 
 namespace coop::net {
 
@@ -43,7 +45,8 @@ namespace coop::net {
         bool g_WorldDirty = false;
         float g_WorldTime = 0;
         s32 g_WorldDays = 0;
-        u8 g_WorldWeather = 0xFF, g_WorldClimate = 0;
+        u8 g_WorldWeather = 0xFF, g_WorldClimate = 0, g_WorldBloodyDay = 0xFF;
+        float g_WorldBloodyTimer = 0;
 
         constexpr int FlagQueueSize = 2048;
         const char* g_FlagQueue[FlagQueueSize];
@@ -57,6 +60,12 @@ namespace coop::net {
 
         bool g_RevivedPending = false;
         char g_GearOut[3][32];
+        WeaponPose g_WeaponsOut[MaxWeapons];
+        int g_WeaponsOutCount = 0;
+        bool g_WeaponsPending = false;
+        struct GiftOut { u8 to; char name[32]; };
+        GiftOut g_GiftsOut[4];
+        int g_GiftsOutCount = 0;
         bool g_GearPending = false;
 
         bool g_StateDirty = false;
@@ -227,17 +236,22 @@ namespace coop::net {
                     float t = r.Get<float>();
                     s32 d = r.Get<s32>();
                     if (!r.Ok()) return false;
-                    u8 weather = 0xFF, climate = 0;
+                    u8 weather = 0xFF, climate = 0, bloody = 0xFF;
+                    float bloody_timer = 0;
                     if (r.Left() >= 2) {
                         weather = r.Get<u8>();
                         climate = r.Get<u8>();
+                    }
+                    if (r.Left() >= 5) {
+                        bloody = r.Get<u8>();
+                        bloody_timer = r.Get<float>();
                     }
                     bool from_host;
                     {
                         ScopedLock lock;
                         from_host = from == g_HostId;
                     }
-                    if (from_host) game::OnHostWorldState({t, d, weather, climate});
+                    if (from_host) game::OnHostWorldState({t, d, weather, climate, bloody, bloody_timer});
                     return true;
                 }
                 case MsgType::Flag: {
@@ -270,6 +284,46 @@ namespace coop::net {
                             std::memcpy(p->gear[i], parts[i].data(), n);
                             p->gear[i][n] = '\0';
                         }
+                    }
+                    return true;
+                }
+                case MsgType::Gift: {
+                    u8 from = r.Get<u8>();
+                    u8 to = r.Get<u8>();
+                    auto name = r.Str();
+                    if (!r.Ok()) return false;
+                    char weapon[32] = {};
+                    std::memcpy(weapon, name.data(), name.size() < 31 ? name.size() : 31);
+                    char who[32] = "a partner";
+                    {
+                        ScopedLock lock;
+                        if (to != g_MyId) return true;
+                        if (Peer* p = FindPeer(from)) std::memcpy(who, p->name, sizeof(who));
+                    }
+                    game::weapons::OnGift(who, weapon);
+                    return true;
+                }
+                case MsgType::Weapons: {
+                    u8 from = r.Get<u8>();
+                    u8 count = r.Get<u8>();
+                    WeaponPose poses[MaxWeapons] = {};
+                    int n = 0;
+                    for (u8 i = 0; i < count && r.Ok(); i++) {
+                        auto name = r.Str();
+                        auto bone = r.Str();
+                        float off[12];
+                        for (float& f : off) f = r.Get<float>();
+                        if (!r.Ok() || n >= MaxWeapons) continue;
+                        WeaponPose& p = poses[n++];
+                        std::memcpy(p.name, name.data(), name.size() < 31 ? name.size() : 31);
+                        std::memcpy(p.bone, bone.data(), bone.size() < 15 ? bone.size() : 15);
+                        std::memcpy(p.offset, off, sizeof(off));
+                    }
+                    if (!r.Ok()) return false;
+                    ScopedLock lock;
+                    if (Peer* p = FindPeer(from)) {
+                        std::memcpy(p->weapons, poses, sizeof(poses));
+                        p->weapon_count = static_cast<u8>(n);
                     }
                     return true;
                 }
@@ -349,7 +403,8 @@ namespace coop::net {
             bool send_world = false;
             float world_time = 0;
             s32 world_days = 0;
-            u8 world_weather = 0xFF, world_climate = 0;
+            u8 world_weather = 0xFF, world_climate = 0, world_bloody = 0xFF;
+            float world_bloody_timer = 0;
             char logs[LogSlots][LogLen];
             int nlogs = 0;
             const char* flags[64];
@@ -360,6 +415,11 @@ namespace coop::net {
             bool send_revived = false;
             char gear[3][32];
             bool send_gear = false;
+            WeaponPose weapons[MaxWeapons];
+            int nweapons = 0;
+            bool send_weapons = false;
+            GiftOut gifts[4];
+            int ngifts = 0;
             {
                 ScopedLock lock;
                 if (g_StateDirty && g_Connected) {
@@ -373,6 +433,8 @@ namespace coop::net {
                     world_days = g_WorldDays;
                     world_weather = g_WorldWeather;
                     world_climate = g_WorldClimate;
+                    world_bloody = g_WorldBloodyDay;
+                    world_bloody_timer = g_WorldBloodyTimer;
                     g_WorldDirty = false;
                 }
                 while (g_FlagCount > 0 && nflags < 64 && g_Connected) {
@@ -380,6 +442,17 @@ namespace coop::net {
                     flags[nflags++] = g_FlagQueue[g_FlagHead];
                     g_FlagHead = (g_FlagHead + 1) % FlagQueueSize;
                     g_FlagCount--;
+                }
+                if (g_GiftsOutCount > 0 && g_Connected) {
+                    std::memcpy(gifts, g_GiftsOut, sizeof(gifts));
+                    ngifts = g_GiftsOutCount;
+                    g_GiftsOutCount = 0;
+                }
+                if (g_WeaponsPending && g_Connected) {
+                    std::memcpy(weapons, g_WeaponsOut, sizeof(weapons));
+                    nweapons = g_WeaponsOutCount;
+                    g_WeaponsPending = false;
+                    send_weapons = true;
                 }
                 if (g_GearPending && g_Connected) {
                     std::memcpy(gear, g_GearOut, sizeof(gear));
@@ -412,6 +485,22 @@ namespace coop::net {
                 w.Str(flags[i]);
                 if (!SendMsg(w)) return false;
             }
+            for (int i = 0; i < ngifts; i++) {
+                Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Gift);
+                w.U8(gifts[i].to);
+                w.Str(gifts[i].name);
+                if (!SendMsg(w)) return false;
+            }
+            if (send_weapons) {
+                Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Weapons);
+                w.U8(static_cast<u8>(nweapons));
+                for (int i = 0; i < nweapons; i++) {
+                    w.Str(weapons[i].name);
+                    w.Str(weapons[i].bone);
+                    w.Bytes(weapons[i].offset, sizeof(weapons[i].offset));
+                }
+                if (!SendMsg(w)) return false;
+            }
             if (send_gear) {
                 Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Gear);
                 for (auto& part : gear) w.Str(part);
@@ -434,6 +523,8 @@ namespace coop::net {
                 w.Bytes(&world_days, 4);
                 w.U8(world_weather);
                 w.U8(world_climate);
+                w.U8(world_bloody);
+                w.Bytes(&world_bloody_timer, 4);
                 if (!SendMsg(w)) return false;
             }
             if (send_state) {
@@ -523,6 +614,10 @@ namespace coop::net {
                 if (g_Config.test_menu) game::progress::SetTestMenu(true);
                 game::combat::SetLogNearby(g_Config.autostart);
                 game::revive::SetTest(g_Config.test_revive);
+                game::revive::SetTestLife(g_Config.test_life);
+                game::weapons::SetTest(g_Config.test_bind);
+                game::items::SetTest(g_Config.test_drop);
+                game::SetKeyScript(g_Config.test_keys);
             }
             while (!InitNetwork()) Sleep(5000);
 
@@ -592,6 +687,23 @@ namespace coop::net {
         g_FlagCount++;
     }
 
+    void SendGift(u8 to, const char* weapon) {
+        ScopedLock lock;
+        if (g_GiftsOutCount >= 4) return;
+        g_GiftsOut[g_GiftsOutCount].to = to;
+        std::strncpy(g_GiftsOut[g_GiftsOutCount].name, weapon, 31);
+        g_GiftsOut[g_GiftsOutCount].name[31] = '\0';
+        g_GiftsOutCount++;
+    }
+
+    void SendWeapons(const WeaponPose* poses, int count) {
+        ScopedLock lock;
+        if (count > MaxWeapons) count = MaxWeapons;
+        std::memcpy(g_WeaponsOut, poses, sizeof(WeaponPose) * count);
+        g_WeaponsOutCount = count;
+        g_WeaponsPending = true;
+    }
+
     void SendGear(const char* head, const char* upper, const char* lower) {
         ScopedLock lock;
         const char* parts[3] = {head, upper, lower};
@@ -614,12 +726,14 @@ namespace coop::net {
         g_EnemyCount++;
     }
 
-    void SendWorldState(float time, s32 days, u8 weather, u8 climate) {
+    void SendWorldState(float time, s32 days, u8 weather, u8 climate, u8 bloody_day, float bloody_timer) {
         ScopedLock lock;
         g_WorldTime = time;
         g_WorldDays = days;
         g_WorldWeather = weather;
         g_WorldClimate = climate;
+        g_WorldBloodyDay = bloody_day;
+        g_WorldBloodyTimer = bloody_timer;
         g_WorldDirty = true;
     }
 

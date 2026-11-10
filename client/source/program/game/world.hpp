@@ -11,6 +11,8 @@ namespace coop::game {
         s32 days;     /* WM_NumberOfDays */
         u8 weather;   /* world::WeatherType (0 Bluesky .. 8 BlueskyRain), 0xFF = unknown */
         u8 climate;   /* the host's climate (weather is only shared within one) */
+        u8 bloody_day;      /* WM_BloodyDay: a Blood Moon rises at midnight; 0xFF = unknown */
+        float bloody_timer; /* WM_BloodyMoonTimer: time since the last Blood Moon */
     };
 
     /* Called every game tick (game thread). */

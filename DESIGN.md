@@ -71,7 +71,8 @@ In normal BotW, death reloads the save. That would break the session, so in co-o
 
 ### Trading
 - Drop a weapon, bow, shield or material near your partner and it appears in their world to pick up.
-- Cooked meals can be shared the same way.
+- Materials go through BotW's **Hold**: hold them from the menu, then put them down or throw them next to your partner.
+- Cooked meals can't be held, so they aren't shared yet.
 
 ### Saves
 - Co-op uses **separate save files**, kept in their own folder. Your normal save is never touched.
@@ -154,8 +155,9 @@ Each milestone is playable before the next one starts.
   - Live partner progress also gives rewards: Spirit Orbs, Korok seeds and Champion abilities. A Spirit Orb was seen arriving in Key Items.
   - Not yet: map reveal from towers, separate co-op saves.
 - **Areas:** players send which stage they're in. Partners elsewhere are hidden; on the map they stay at the shrine they entered.
-- **M2:** the puppet wears the partner's armor (one gear actor per armor model, animated with the body) and shows their attacks, bow, throws and guard. The host's weather is shared within a climate. A partner's tower reveals your map. Not yet: weapons on the puppet, warp to partner (writing Link's position doesn't move him).
+- **M2:** the puppet wears the partner's armor (one gear actor per armor model, animated with the body) and carries their weapons on the right bones (the game's own bone binding), and shows their attacks, bow, throws and guard. The host's weather and Blood Moon are shared. A partner's tower reveals your map. Not yet: warp to partner (writing Link's position doesn't move him; fast travel is UI-driven).
 - **M3 so far:** placed enemies (same map HashId in every world) share their life. Hits from either player count, and a kill in one world is a kill in all. **Co-op revive:** with no fairy or Mipha's Grace, a partner nearby gets you back up with 3 hearts instead of a game over (once every 2 minutes). Not yet: enemy movement sync, a crawl-and-revive downed state, friendly fire.
+- **M5 so far:** trading weapons and materials (drop, put down or throw near a partner), a horse under a riding partner, three or more players at once.
 - **Progress catch-up goes both ways:** a joiner gets everything done so far, and everyone else gets the joiner's progress.
 - **Saves:** for now co-op uses a separate Ryujinx user profile, which has its own saves.
 

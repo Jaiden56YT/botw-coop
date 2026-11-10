@@ -75,6 +75,8 @@ namespace coop::game::gear {
         }
     }
 
+    void LocalWorn(char (&out)[Slots][NameLen]) { std::memcpy(out, g_Sent, sizeof(out)); }
+
     bool GearActorFor(const char* armor, char (&out)[64]) {
         if (!g_MapTried) LoadMap();
         int lo = 0, hi = g_MapCount - 1;

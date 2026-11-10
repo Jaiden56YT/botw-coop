@@ -33,6 +33,8 @@ namespace coop::net {
         EnemyLife    = 32, /* any -> all: u32 area, u32 enemy HashId, s32 life */
         Revived      = 33, /* any -> all: (no payload) I went down and a partner's presence revived me */
         Gear         = 34, /* any -> all: 3 strings: worn head, upper, lower armor actor names ("" = none) */
+        Gift         = 36, /* any -> all: u8 recipient id, string weapon actor name */
+        Weapons      = 35, /* any -> all: u8 count, then per weapon: string name, string bone, f32[12] offset from the bone */
     };
 
     /* Per-frame state of a player's own Link. Must stay 44 bytes. */

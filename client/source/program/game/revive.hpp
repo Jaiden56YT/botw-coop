@@ -20,4 +20,7 @@ namespace coop::game::revive {
     /* Debug: in the world, set your life to 0 and run the game's revive
        check once, the way a lethal hit does. */
     void SetTest(bool on);
+    /* Debug: once a partner is near, drop Link's life to this (quarter hearts)
+       and skip fairies, so a real hit tests the revive. 0 = off. */
+    void SetTestLife(int life);
 }

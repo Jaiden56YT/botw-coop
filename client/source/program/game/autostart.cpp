@@ -1,6 +1,8 @@
 #include "autostart.hpp"
 
 #include <atomic>
+#include <cstdlib>
+#include <cstring>
 
 #include <lib.hpp>
 #include <nn/os.hpp>
@@ -135,5 +137,60 @@ namespace coop::game {
     void EnableAutostart(bool enabled) {
         g_Enabled.store(enabled);
         if (enabled) Logging.Log("[coop] autostart: pressing A until the game loads");
+    }
+
+    namespace {
+        char g_Keys[256];
+        char* g_KeyNext = nullptr;
+        s64 g_KeyAt = 0;
+
+        u64 ButtonMask(const char* n) {
+            struct { const char* name; int bit; } const map[] = {
+                {"A", 0}, {"B", 1}, {"X", 2}, {"Y", 3}, {"L", 6}, {"R", 7}, {"ZL", 8}, {"ZR", 9}, {"Plus", 10},
+                {"Minus", 11}, {"Left", 12}, {"Up", 13}, {"Right", 14}, {"Down", 15},
+            };
+            for (auto& m : map)
+                if (std::strcmp(m.name, n) == 0) return 1ull << m.bit;
+            return 0;
+        }
+    }
+
+    void SetKeyScript(const char* script) {
+        std::strncpy(g_Keys, script ? script : "", sizeof(g_Keys) - 1);
+        g_KeyNext = g_Keys[0] ? g_Keys : nullptr;
+    }
+
+    void KeyScriptTick(s64 now) {
+        if (!g_KeyNext) return;
+        if (g_KeyAt == 0) {
+            float pos[3];
+            if (!GetLocalPlayerPos(pos)) return;
+            g_KeyAt = now + 5000; /* settle first */
+        }
+        if (now < g_KeyAt) return;
+        char token[32] = {};
+        char* comma = std::strchr(g_KeyNext, ',');
+        size_t len = comma ? static_cast<size_t>(comma - g_KeyNext) : std::strlen(g_KeyNext);
+        std::memcpy(token, g_KeyNext, len < 31 ? len : 31);
+        g_KeyNext = comma ? comma + 1 : nullptr;
+        int ms = 150;
+        if (char* colon = std::strchr(token, ':')) {
+            *colon = '\0';
+            ms = std::atoi(colon + 1);
+        }
+        u64 mask = ButtonMask(token);
+        if (mask) PressButtons(mask, ms);
+        /* Left stick: SL/SR/SU/SD (left, right, up, down). Anything else just waits. */
+        struct { const char* name; s32 x, y; } const sticks[] = {
+            {"SL", -0x7FFF, 0}, {"SR", 0x7FFF, 0}, {"SU", 0, 0x7FFF}, {"SD", 0, -0x7FFF},
+        };
+        bool stick = false;
+        for (auto& st : sticks)
+            if (std::strcmp(token, st.name) == 0) {
+                HoldStick(st.x, st.y, ms);
+                stick = true;
+            }
+        Logging.Log("[coop] keys: %s (%d ms)%s", token, ms, mask || stick ? "" : " (wait)");
+        g_KeyAt = now + ms + 1200;
     }
 }

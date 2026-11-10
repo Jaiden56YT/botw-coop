@@ -34,6 +34,8 @@ namespace coop::game::revive {
         std::atomic<int> g_Revived{0};
         int g_Logged = 0;
         bool g_Test = false;
+        int g_TestLife = 0;       /* test: drop to this life, then let a real hit bring Link down */
+        s64 g_TestLifeAt = 0;
         bool g_TestSkipGame = false;
         s64 g_TestAt = 0;
     }
@@ -51,6 +53,7 @@ namespace coop::game::revive {
             *life = ReviveLife;
             g_ReadyAt.store(now + CooldownMs);
             g_Revived.fetch_add(1);
+            if (g_TestLifeAt < 0) g_TestSkipGame = false;
             return true;
         }
     };
@@ -58,6 +61,7 @@ namespace coop::game::revive {
     void Install() { TryReviveHook::InstallAtOffset(offsets::Player_TryRevive); }
 
     void SetTest(bool on) { g_Test = on; }
+    void SetTestLife(int life) { g_TestLife = life; }
 
     void OnPartnerRevived(u8 player_id) {
         Logging.Log("[coop] revive: player %d went down and was revived by being near you", player_id);
@@ -88,6 +92,19 @@ namespace coop::game::revive {
             Logging.Log("[coop] revive: you went down; your partner got you back up (3 hearts). Next one in %lld s",
                         CooldownMs / 1000);
             net::SendRevived();
+        }
+
+        /* Test: a real lethal hit. Low life, and fairies/Mipha's Grace skipped,
+           so the next hit that would end the game reaches our revive. */
+        if (g_TestLife > 0 && here && g_TestLifeAt == 0) g_TestLifeAt = now + 8000;
+        if (g_TestLifeAt > 0 && now > g_TestLifeAt) {
+            g_TestLifeAt = -1;
+            uintptr_t link = LinkActor();
+            if (s32* life = link ? LifeOf(link) : nullptr) {
+                Logging.Log("[coop] revive test: life %d -> %d; the next lethal hit skips fairies", *life, g_TestLife);
+                *life = g_TestLife;
+                g_TestSkipGame = true;
+            }
         }
 
         if (g_Test && here && g_TestAt == 0) g_TestAt = now + 4000;

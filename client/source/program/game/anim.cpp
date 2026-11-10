@@ -85,7 +85,8 @@ namespace coop::game::anim {
             case Glide: return "Glide";
             case Jump: return "Jump";
             case Fall: return "Fall";
-            case Horse: return "Horse";
+            /* The rider's clips follow the horse's gait (see DriveHorse). */
+            case Horse: return speed < 0.5f ? "Horse" : speed < 3.0f ? "HorseGear1" : speed < 7.0f ? "HorseGear2" : "HorseGear3";
             case Surf: return "Surf";
             default: return nullptr;
         }

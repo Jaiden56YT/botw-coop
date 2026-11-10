@@ -132,6 +132,44 @@ Logged with `test_move` (which presses the buttons) and the `ASList_StartAnimati
 - **An actor with an armor's model list and the puppet's ASList animates the armor with Link's clips.** The ASList's `AddRes` is `Player_Animation`, and armor skeletons use Link's bone names. That's what the `CoopGear_<model>` actors are.
 - `@MU` (model user override, InstParamPack string type 5) is written by the game for helper actors, e.g. shield surfing's `WakeBoardPlayer` and arrows. **Our NPC-profile actors ignore it**, even with `ModelUser = Dummy`, so each model needs its own actor.
 
+### Weapons: binding an actor to a bone
+
+- **`ModelBindInfo`** (vtable `0x1d1cab8`; constructor `0x1096f68`) keeps an actor on a bone of another actor. The recipe, from `0x96b28c`:
+  - construct
+  - `ActorLinkConstDataAccess::acquire(info + 8, parent, false)` at `0x1517e60`
+  - bone name (`const char*`) at `+0x28`; unit/bone index (u16 each) at `+0x60`, set to `0xffff` so it's looked up by name
+  - offset matrix at `+0x68` (identity by default)
+  - `Actor::setModelBindInfo(actor, info)` at `0x1533750` (stores it at `Actor+0x4d0`); `0x1533760` clears it
+- **Setting it isn't enough.** The binder calls `calc(info, child)` at `0x1097300` every frame (weapons' own AI does this). It resolves the bone, gets its world matrix from the parent's model (unit vtable `+0x70`), applies the offset and writes the child's `mMtx`. Called with a scratch buffer as the "child", it gives any bone's world matrix.
+  - Checked: a Master Sword actor bound to Link's `Head` sat 1.5 m up, sticking out of his head.
+- Link's attachment bones: `Weapon_R`, `Weapon_L`, `Pod_A`, `Pod_B`, `Pod_C` (back holsters), `Spine_2`, `Waist`.
+  - Worn sword, shield and bow sit on `Pod_A`, the quiver on `Pod_B`, with offsets of up to 0.2 m.
+  - Their own bind info names `Pod_A` but stays unresolved (`ffff`), so the game positions them another way (`Actor+0x4d8`, `0x1096d24`). The mod measures each weapon against the bones instead.
+- Weapon actor packs each hold one model list. 266 weapons use 265 models.
+
+### Trading
+
+- A thrown or dropped weapon keeps its actor name and leaves the bone it sat on. The mod treats a `Weapon_*` actor more than 35 cm from all of Link's bones, with the name of something Link carried a moment ago, as let go.
+- Moving such an actor away doesn't remove it: its physics puts it back. The mod kills it with `killWithDropsAndEffects(0)` (vtable `+0x1b0`) and never hands the same actor over twice.
+- Spawning a real `Weapon_*` actor with `createActor` (`@P`, `@R`) gives a normal world weapon you can pick up.
+- The Master Sword can't be thrown; R fires `PlayerBeam` and the sword stays on Link.
+- The inventory's options for a material are only Hold and Cancel (Drop exists for weapons, bows and shields). Holding spawns the item actors as the menu closes, about 1.1 m above Link's feet in his hands. A puts them down or throws them; B puts them back in the bag (the actors go away).
+- A weapon dropped from the inventory is spawned by Link while the menu is still open.
+- The pause menu stops the clock: `WM_Time` doesn't change while it's open (our tick, driven by `getPlayerPos` callers, keeps running). In the System tab the clock runs. In play `WM_Time` also stands still for up to 2 s now and then, mostly in the first 10 s after a load, so the mod only counts a stop of 1.2 s or more, and ignores the first 10 s in an area.
+- A guest's time sync writes `WM_Time` while the menu is open (every 10 s, since the host's clock keeps going), which looks like the clock moved.
+- In the menu, the D-pad moves the cursor one slot; holding the left stick scrolls and speeds up; R/L switch between Adventure Log, Inventory and System. Moving right past a category's last column goes to the next category.
+
+### Horses
+
+- `GameRomHorse01`'s pack: model list `EngineRom_Horse_Link`, ASList `Horse_Link` (AddRes `Horse_Link_Animation` retargeted to `Skeleton`), sequences `Wait`, `Move_Gear1`–`Move_Gear4`, `Move_Back`, `Jump_Gear3`/`4`, and others. Copied onto the monk NPC setup with no physics (`CoopHorse`), it stands and animates.
+- Where the rider sits: `Model/Horse_Link.sbfres`'s skeleton has a `Saddle_Root` bone (parent `Spine_1`) at (0, 2.10, 0.05) m from the horse's origin in the rest pose. Link's riding clips (`Horse_Wait`, `Horse_Move_Gear_1`–`3`) keep his hips (`Skl_Root`) within 5 cm of his origin, so a mounted Link's position is the saddle point. The mod puts a rider's horse 2.10 m below and 0.05 m behind them. (Not measured on a real mount: a `GameRomHorse01` spawned on the plateau edge didn't appear.)
+- The `A_Pose_Horse_*` clips are partial poses; a puppet playing one alone stands upright.
+- `ASList::startAnimation` can return false for a sequence whose resources are still loading; asking again a few frames later works. The puppet keeps asking every 200 ms until it plays.
+
+### Blood Moon
+
+- `TimeMgr` adds to `WM_BloodyMoonTimer` (f32); past 7 days it sets `WM_BloodyDay`, and on a bloody day the Blood Moon rises at midnight. Both are program-writable game data. Guests copy the host's values once a second.
+
 ### Map reveal
 
 - The map's revealed regions follow `MapTower_NN` (shared). `MapTower_NN_OpenScaleLevel` / `_OpenCenterPos` drive the reveal animation. Checked with a save whose 15 tower flags were cleared: dark map without a partner, fully revealed after receiving the flags.
@@ -153,6 +191,8 @@ Logged with `test_move` (which presses the buttons) and the `ASList_StartAnimati
 - A breadth-first scan from Link's actor, and from his physics (`Actor+0x578`, the `InstanceSet`), found about 60 copies of his position. The physics copies included Havok's own memory (`0x655f…`), reached through the character controller at `InstanceSet+0x80`.
 - **Raising any group of them, or all of them, by 30 m didn't move him.** The game rebuilds his position from state not found yet.
 - Second try: `DynStartPos` and `StartPosName` are AI and debug parameters, not a stage change with a free position. Fast travel goes through events and named warp points.
+- Fourth look: the travel location's reader (`0xdf8524`) also goes back through UI screens (`0xe833f0`).
+- Third try: fast travel from the map. The map screen (`0xdb155c`) sets `App_Map_WarpLocationName` (setter `0xd35870`, handle global `0x1da6938`), opens UI screen `0x3e` and steps it along. The warp itself happens later through the UI state machine and an event, so there's no single call to make.
 - Searching for `ksys::phys::RigidBody::setPosition` by its shape (three NaN self-compares, then a virtual tail call) found nothing. The OverwritePlayerPos strings (`0x111025c`) belong to a debug parameter list.
 
 ### Module pitfalls

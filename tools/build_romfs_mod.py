@@ -73,7 +73,11 @@ ACTORS = [
             "Actor/AS/CoopPlayer_Climb.bas": "Climb_Wall_Move_U",
             "Actor/AS/CoopPlayer_ClimbWait.bas": "Climb_Wall_Wait_FootL",
             "Actor/AS/CoopPlayer_Jump.bas": "Nml_Move_Run_Jump_FootL",
-            "Actor/AS/CoopPlayer_Horse.bas": "A_Pose_Horse_No_Rein_Wait",
+            # Full-body riding clips (the A_Pose_Horse_* ones are partial poses).
+            "Actor/AS/CoopPlayer_Horse.bas": "Horse_Wait",
+            "Actor/AS/CoopPlayer_HorseGear1.bas": "Horse_Move_Gear_1",
+            "Actor/AS/CoopPlayer_HorseGear2.bas": "Horse_Move_Gear_2",
+            "Actor/AS/CoopPlayer_HorseGear3.bas": "Horse_Move_Gear_3",
             "Actor/AS/CoopPlayer_Surf.bas": "Shield_Board_Go2",
             # Actions (attacks, bow, throw, guard), from the player's own clips.
             "Actor/AS/CoopPlayer_Attack1.bas": "Sword_Attack_S1",
@@ -105,6 +109,9 @@ ACTORS = [
             "ClimbWait": "CoopPlayer_ClimbWait",
             "Jump": "CoopPlayer_Jump",
             "Horse": "CoopPlayer_Horse",
+            "HorseGear1": "CoopPlayer_HorseGear1",
+            "HorseGear2": "CoopPlayer_HorseGear2",
+            "HorseGear3": "CoopPlayer_HorseGear3",
             "Surf": "CoopPlayer_Surf",
             "Attack1": "CoopPlayer_Attack1",
             "Attack2": "CoopPlayer_Attack2",
@@ -143,6 +150,32 @@ ACTORS = [
         "info": {"actorScale": 1.0, "elink": "Dummy", "slink": "Dummy", "xlink": "Dummy", "instSize": 700000},
         "info_from": ("PauseMenuPlayer", ["bfres", "mainModel", "aabbMin", "aabbMax", "boundingForTraverse",
                                           "rigidBodyCenterY", "lookAtOffsetY", "cursorOffsetY"]),
+    },
+    {
+        # A horse under a partner who's riding: the monk's physics-free NPC
+        # setup with a horse's model and animation sequences. The mod plays
+        # Wait / Move_Gear1-4 from the rider's speed.
+        "name": "CoopHorse",
+        "template": "Npc_DungeonPriest001",
+        "borrow": {"GameRomHorse01": ["Actor/AS/", "Actor/ModelList/", "Actor/ASList/"]},
+        "drop": ["Actor/ModelList/Npc_DungeonPriest001.bmodellist", "Actor/ASList/Npc_DungeonPriest001.baslist",
+                 "Actor/AS/Npc_DungeonPriest001_Wait.bas", "Actor/AS/Npc_DungeonPriest001_Vanish.bas",
+                 "Physics/SupportBone/Npc_Shiekah_Maharishi/Npc_Shiekah_Maharishi.bphyssb",
+                 "Actor/Physics/Npc_DungeonPriest001.bphysics"],
+        "link": {
+            "ActorNameJpn": "協力プレイヤーの馬",
+            "ModelUser": "EngineRom_Horse_Link",
+            "ASUser": "Horse_Link",
+            "PhysicsUser": "Dummy",
+            "AttentionUser": "Dummy",
+            "ChemicalUser": "Dummy",
+            "ElinkUser": "Dummy",
+            "SlinkUser": "Dummy",
+            "XlinkUser": "Dummy",
+            "ActorScale": 1.0,
+        },
+        "info": {"actorScale": 1.0, "elink": "Dummy", "slink": "Dummy", "xlink": "Dummy", "instSize": 700000},
+        "info_from": ("GameRomHorse01", ["bfres", "mainModel", "aabbMin", "aabbMax", "boundingForTraverse"]),
     },
 ]
 
@@ -390,6 +423,39 @@ def main():
         gear_map.parent.mkdir(parents=True, exist_ok=True)
         gear_map.write_text("".join(f"{a} {m}\n" for a, m in sorted(mapping)))
         print(f"gear: {len(models)} gear actors for {len(mapping)} armor pieces")
+
+    # Weapons on the puppet: one actor per weapon model, showing just that
+    # model. The mod binds it to a bone of the puppet (ModelBindInfo), so it
+    # follows the hand or back. weapon-map.txt maps weapon actor -> model.
+    weapon_dir = src / "weapons"
+    if weapon_dir.exists():
+        wmodels, wmapping = {}, []
+        for path in sorted(weapon_dir.glob("Weapon_*.sbactorpack")):
+            weapon = path.name[: -len(".sbactorpack")]
+            wsarc = oead.Sarc(oead.yaz0.decompress(path.read_bytes()))
+            lists = [f for f in wsarc.get_files() if f.name.startswith("Actor/ModelList/")]
+            if len(lists) != 1:
+                continue
+            model = lists[0].name.split("/")[-1][: -len(".bmodellist")]
+            wmapping.append((weapon, model))
+            wmodels.setdefault(model, (weapon, bytes(lists[0].data)))
+        for model, (weapon, model_list) in wmodels.items():
+            wname = f"CoopWeapon_{model}"
+            writer = oead.SarcWriter.from_sarc(oead.Sarc(built["CoopPlayer"]))
+            del writer.files["Actor/ModelList/CoopPlayer.bmodellist"]
+            writer.files[f"Actor/ModelList/{model}.bmodellist"] = model_list
+            link = oead.aamp.ParameterIO.from_binary(bytes(writer.files["Actor/ActorLink/CoopPlayer.bxml"]))
+            set_link_params(link, {"ModelUser": model, "ActorNameJpn": "協力プレイヤー(武器)"})
+            del writer.files["Actor/ActorLink/CoopPlayer.bxml"]
+            writer.files[f"Actor/ActorLink/{wname}.bxml"] = link.to_binary()
+            _, data = writer.write()
+            add_pack(wname, "CoopPlayer", bytes(data))
+            add_actor_info(info, {"name": wname, "template": "CoopPlayer",
+                                  "info_from": (weapon, ["bfres", "mainModel", "aabbMin", "aabbMax",
+                                                         "boundingForTraverse"])})
+        weapon_map = out / "botw-coop" / "weapon-map.txt"
+        weapon_map.write_text("".join(f"{w} {m}\n" for w, m in sorted(wmapping)))
+        print(f"weapons: {len(wmodels)} weapon actors for {len(wmapping)} weapons")
 
     info_bin = oead.byml.to_binary(info, big_endian=False, version=byml_version)
     (out / "Actor/ActorInfo.product.sbyml").write_bytes(bytes(oead.yaz0.compress(info_bin)))
