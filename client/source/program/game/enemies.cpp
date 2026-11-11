@@ -94,12 +94,7 @@ namespace coop::game::enemies {
         const float* BodyPos(uintptr_t body) { return reinterpret_cast<const float*>(body + offsets::HkBody_Pos); }
 
         /* Link's own body: never an enemy's. */
-        uintptr_t LinkBody() {
-            uintptr_t g = Read<uintptr_t>(Base() + offsets::HavokPos_Global);
-            uintptr_t x = g ? Read<uintptr_t>(g + offsets::HavokPos_A) : 0;
-            uintptr_t y = x ? Read<uintptr_t>(x + offsets::HavokPos_B) : 0;
-            return y ? y + offsets::HavokPos_Pos - offsets::HkBody_Pos : 0;
-        }
+        uintptr_t LinkBody() { return LinkRigidBody(); }
 
         /* Looking through memory for the rigid bodies of the enemies in
            `want` (those with none yet). Only characters have a body of this

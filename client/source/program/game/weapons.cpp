@@ -227,6 +227,15 @@ namespace coop::game::weapons {
             float bones[NumBones][12];
             bool have[NumBones];
             for (int b = 0; b < NumBones; b++) have[b] = BoneMatrix(link, b, bones[b]);
+            /* No bone could be read: Link's skeleton isn't there for the asking
+               right now. It comes and goes (for over a second at a time with two
+               geared partners standing by, seen with three players), and the
+               scan then says nothing about what he carries: sending "no
+               weapons" made every partner take them off the puppet and make
+               them again every few seconds. */
+            bool any_bone = false;
+            for (int b = 0; b < NumBones; b++) any_bone |= have[b];
+            if (!any_bone) return;
 
             net::WeaponPose poses[net::MaxWeapons] = {};
             int n = 0;

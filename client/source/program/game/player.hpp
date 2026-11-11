@@ -30,6 +30,11 @@ namespace coop::game {
     /* The title screen's Link (the menu backdrop) is up: no save is being played. */
     bool IsAtTitle();
 
+    /* Link's Havok rigid body (position at +HkBody_Pos, velocity at
+       +HkBody_Vel), or 0 while he has none. Writing its position together
+       with his matrix moves him. */
+    uintptr_t LinkRigidBody();
+
     /* Debug: logs PlayerInfo's view of the player next to the actor's own matrix. */
     void LogPlayerDebug();
 }

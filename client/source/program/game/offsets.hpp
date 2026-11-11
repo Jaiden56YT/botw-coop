@@ -202,6 +202,13 @@ namespace coop::game::offsets {
        pointer path from an actor (or its physics, Actor+0x578) to its body
        was found within 3-4 levels, so bodies are found by scanning memory. */
     constexpr uintptr_t HkRigidBody_Vtable = 0x1b87b20;
+    /* Link's own body from his actor: [[[actor+0x578]+0x80]+0x410] is that
+       hkpRigidBody (chain from Savage Wind Recomp's teleport, checked here
+       against the global chain above). The global chain goes through a slot
+       table (+0xd28) whose order depends on what loaded first: always the
+       same on a console and in Ryujinx, but not in the recomp, where the slot
+       was empty in one run of two. So the actor chain is tried first. */
+    constexpr uintptr_t Actor_Physics = 0x578, Physics_ToCharacter = 0x80, Character_ToBody = 0x410;
     constexpr uintptr_t HkBody_Pos = 0x1c0; /* motion transform translation */
     constexpr uintptr_t HkBody_Vel = 0x270; /* motion linear velocity */
     /* Player: the height a fall started at (fall damage), 1.6.0 offset. */

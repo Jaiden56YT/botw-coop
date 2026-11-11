@@ -45,6 +45,7 @@ namespace coop::game::warp {
 
         /* A warp in progress. */
         bool g_Active = false;
+        s64 g_LastActiveAt = -100000;
         u8 g_TargetId = 0;
         char g_TargetName[32];
         float g_Hop[3];
@@ -56,13 +57,8 @@ namespace coop::game::warp {
 
         /* Link's Havok position (see offsets.hpp), or null. */
         float* HavokPos() {
-            uintptr_t g = Read<uintptr_t>(Base() + offsets::HavokPos_Global);
-            if (!g) return nullptr;
-            uintptr_t a = Read<uintptr_t>(g + offsets::HavokPos_A);
-            if (!a) return nullptr;
-            uintptr_t b = Read<uintptr_t>(a + offsets::HavokPos_B);
-            if (!b) return nullptr;
-            return reinterpret_cast<float*>(b + offsets::HavokPos_Pos);
+            uintptr_t body = LinkRigidBody();
+            return body ? reinterpret_cast<float*>(body + offsets::HkBody_Pos) : nullptr;
         }
 
         s64 NowMsLocal() { return nn::os::ConvertToTimeSpan(nn::os::GetSystemTick()).GetMilliSeconds(); }
@@ -328,8 +324,13 @@ namespace coop::game::warp {
 
     void SetTestFollow(int metres) { g_TestFollow = metres; }
 
+    bool Busy(s64 now) { return g_Active || now - g_LastActiveAt < 3000; }
+
     void Tick(s64 now) {
-        if (g_Active) Step(now);
+        if (g_Active) {
+            g_LastActiveAt = now;
+            Step(now);
+        }
         GuardLife(now);
         FollowTest(now);
 

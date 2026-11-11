@@ -390,6 +390,9 @@ namespace coop::game {
         void DriveGear(Ghost& g, s64 now) {
             for (int s = 0; s < 3; s++) {
                 if (std::strcmp(g.want_gear[s], g.gear_name[s]) == 0) continue;
+                /* Nothing can be spawned right now (a menu, a load): keep what's
+                   on and come back, or the new piece would never show. */
+                if (g.want_gear[s][0] && !SafeToSpawn(now)) continue;
                 ParkGear(g, s);
                 if (!g.want_gear[s][0]) continue;
                 /* Reuse a parked piece of the same model if we have one. */
@@ -414,7 +417,6 @@ namespace coop::game {
                 Place(g.gear[s], g.shown, g.shown_rot);
                 if (g.anim && g.gear_anim[s] != g.anim && PlayAS(g.gear[s], g.anim, 0)) g.gear_anim[s] = g.anim;
             }
-            (void)now;
         }
 
         void ParkWeapon(Ghost& g, int i) {
@@ -441,6 +443,7 @@ namespace coop::game {
                 }
                 const net::WeaponPose& p = g.want_weapons[i];
                 if (std::strcmp(actor_name, g.weapon_actor[i]) != 0) {
+                    if (!SafeToSpawn(NowMs())) continue; /* as for gear: wait, don't give up */
                     if (g.weapon_actor[i][0]) Logging.Log("[coop] player %d: slot %d was %s", g.peer_id, i, g.weapon_actor[i]);
                     ParkWeapon(g, i);
                     g.weapon[i] = SpawnNamed(actor_name, g.shown, g.shown_rot);

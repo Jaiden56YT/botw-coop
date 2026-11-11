@@ -226,6 +226,9 @@ Logged with `test_move` (which presses the buttons) and the `ASList_StartAnimati
 - Also written: `PlayerInfo+0x88` (its position copy), the fall-start height `Player+0x20d0` (read 374.27 standing at y 374.27, so the 1.6.0 offset holds; without it a warp down counts as a fall), and the Havok linear velocity at position `+0xb0`. Held in the air, Havok keeps adding fall speed (y sat at the -64 m/s cap), and Link landed with it: from 120 to about 20 life.
 - **Distance:** 15 m, 500 m and 1.5 km warps load in under a few seconds. While an area loads, the game holds Link perfectly still with the loading icon up; once he moves, it's loaded. At 4 km, and at 2 km in two 1 km hops, the area never loaded (30 s and more). The stage's load centre, `main+0x1e1289c` (set only when a stage loads, by `0xc5a478`, from `0xc465ac`), stayed at the start; forcing it to the new spot made the game stop holding Link, and he fell through ground that wasn't there. In 250 m hops, 4.2 km loaded hop after hop. The mod hops at y 1,100 (above every peak); up there the cold costs a little health, which the mod gives back.
 - Moving every other copy of the old position (311 of them, found by a memory scan) didn't help either.
+- **Finding that body:** the global chain above goes through a slot table (`+0xd28`) filled in load order. On a console and in Ryujinx the order never changes; in Savage Wind Recomp it does, and in one run of two the slot was empty, so every warp failed without a word. Link's body is also reachable from his actor: `[[[Actor+0x578]+0x80]+0x410]` is the `hkpRigidBody` (chain from Savage Wind's own teleport, `runtime/control_cells.c`). `LinkRigidBody()` (`player.cpp`) tries that first, checks the vtable, and falls back to the global chain; in Ryujinx both give the same address.
+- **A far hop pauses the world.** While the map around Link isn't loaded the game stops the world (and the clock) every update, so a hop's load reads as "paused" to `WatchPause`: 1 to 4 s per slow hop, 17 s in a row in a busy Ryujinx. Nothing may be spawned then (correct), but two things went wrong with it: a partner's armor and weapons that arrived in that window were given up on for good (now they wait), and Link's hearts reading 0 for a moment around the warp and then full again counted as a meal eaten in the menu and was shared (now a rise from 0, or anything during a warp, isn't a meal).
+- A warp that starts in the first seconds after a save loads (only the `test_follow` option does that) doesn't take: the placement is written six times and Link stays put, then the next try works.
 - Earlier, without the Havok chain: a breadth-first scan from Link's actor and his physics (`Actor+0x578`) found about 60 copies of his position, and raising them by 30 m didn't move him. `DynStartPos` and `StartPosName` are AI and debug parameters. Fast travel goes through the map screen (`0xdb155c` sets `App_Map_WarpLocationName`, setter `0xd35870`, then UI screen `0x3e`) and an event.
 
 ### Enemy bodies (enemy movement sync)
@@ -273,10 +276,11 @@ Logged with `test_move` (which presses the buttons) and the `ASList_StartAnimati
 
 - With `tryRevive` returning false the game shows Game Over; Continue reloads the last save in place. The game removes the mod's actors as in any load. The flag tables' reset counter (`Manager+0xc28`) does not change on this reload, so it isn't seen as a new save: the mod has to compare what it believes is set against the game to notice the rewind.
 
-### Carried weapons: two sources of churn
+### Carried weapons: three sources of churn
 
 - A bow on Link's back sits about as close to `Spine_2` as to `Pod_A`. An idle animation flipped the nearest bone about once a second; each flip sent a new message and re-bound the weapon on every partner's puppet. A weapon now stays on its last bone unless another is under half the distance.
 - Now and then a scan finds no weapon on any bone (the bone matrices aren't there for a moment), and during a warp's hops the weapons trail Link. Sending "no weapons" made partners take everything off the puppet and spawn it again; fewer weapons than last time now has to hold for 0.75 s.
+- With three players standing together (two of them with a full set of gear), no bone of Link's could be read (`ModelBindInfo` calc returns false for all seven) for over a second at a time, every 5 to 10 s, in Ryujinx and in the recomp alike; with two players it didn't happen in five minutes. The 0.75 s rule above didn't cover it, and both geared players' weapons were taken off and remade on every screen every few seconds. A scan in which no bone can be read is now thrown away. Why the skeleton goes missing isn't known.
 - `Item_Conductor` is an actor that can appear beside Link by itself; it isn't something carried, and is ignored by the trading code.
 
 ### The map screen, for test scripts
@@ -372,15 +376,24 @@ Animation-slot layouts (keys are stored as hashes: `NumASSlot` = 1749500541, `Is
 | Two instances can share a machine with `--root-data-dir`. A copied data folder needs Nextendo's `nextendo_patchnote_version` too, or launch stops at a "what's new" popup. | Documented in README. |
 
 
-## Running on a real console (not run yet)
+## Running on a real console
 
-What differs from Ryujinx, found by reading files rather than by running:
+First run on a real Switch on 2026-11-10: the mod loaded, connected over Wi-Fi and showed partners (see `docs/SWITCH.md` for what was and wasn't tried). What differs from Ryujinx, found by reading files before that run:
 
 - **Permissions (`main.npdm`).** exlaunch's hooks patch the game's code through `svcMapProcessMemory` and get their own process handle with `svcCreateSession`/`svcReplyAndReceive`. A retail game's npdm doesn't allow those calls (BotW 1.9.0 allows 50 system calls, none above 0x5f); Ryujinx doesn't enforce the list, a console does. `client/config.json` builds an npdm for the mod. It used to carry exlaunch's sample title id and lacked five services the 1.9.0 game asks for (`ectx:aw`, `mnpp:app`, `ngc:u`, `ngct:u`, `notif:a`) and one flag (`disable_device_address_space_merge`: the game's flags byte is 0x27). It now matches the game's file in title id, services, flags, stack size and thread limits, and adds the system calls. Ryujinx loads it when it's in the mod's `exefs` ("main.npdm replaced") and the game runs; it also turns on SD card access there, which the game's own npdm refuses (0x320002).
 - **Save data.** The save's header (`ExtraData0` in Ryujinx's save folder) gives a data size of 65,011,712 bytes and a journal of 1,572,864 bytes. Everything written between two `CommitSaveData` calls has to fit the journal on a console. A save slot's `game_data.sav` is 1,027,264 bytes, the biggest file there is. `saves.cpp` commits before the next file would take the running total past 1 MB.
 - **Speed.** A full pass over memory for rigid bodies took 170 ms on an M4. `enemies.cpp` now searches 3 ms per frame and resumes.
 - **Log.** `svcOutputDebugString` goes nowhere a player can see. `filelog.cpp` keeps the last 64 KB of log lines and, with `log_file = true`, the network thread appends them to `sd:/botw-coop/log.txt` every 2 s (`MountSdCardForDebug`, which needs the npdm above).
 
+
+## Savage Wind Recomp (a native build of the game)
+
+[Savage Wind Recomp](https://github.com/Revivedx/SavageWindRecomp) recompiles BotW 1.9.0 to native code. It has no loader for Switch code, so the checkout at `~/SavageWindRecomp` carries local changes (not upstream) that take this mod as it is built for the console:
+
+- `tools/mod_add.py <subsdk9> <client.elf>` puts the mod in `extracted/exefs`; the mod is recompiled with the game, and its exlaunch hook calls are answered by the runtime (`runtime/mods.c`). Game functions it hooks are listed in `extracted/exefs/hooks.txt`. Its sockets are the computer's.
+- After every `make -C client` here, the game code there has to be built again: `tools/mac/mod_rebuild.sh` (4 to 8 minutes). Test copies: `tools/mac/coop.sh <n> <seconds>` starts copy n (settings in `build-vk/coop<n>/romfs/botw-coop/config.ini`), `PORT=780<n> tools/mac/ctl.sh <command>` drives it (`press`, `stick`, `shot`, `mem read`, `state`).
+- It runs the same mod code, so it is a third platform to test on, and it found bugs the other two hid: the slot-table order (above), the gear that was never retried, the false meal, and the three-player weapon churn.
+- What behaves differently there: far hops load slower (1 to 3 s each against 5 to 160 ms in Ryujinx), and load order varies from run to run.
 
 ## The inventory (pouch)
 

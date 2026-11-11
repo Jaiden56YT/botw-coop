@@ -74,8 +74,10 @@ namespace coop::game::status {
                 Distance(pos, me, dist, sizeof(dist));
                 float jx = pos[0] - w.last_pos[0], jz = pos[2] - w.last_pos[2];
                 bool jumped = jx * jx + jz * jz > 300.0f * 300.0f;
-                float mx = pos[0] - me[0], mz = pos[2] - me[2];
-                bool by_me = mx * mx + mz * mz < 30.0f * 30.0f && area == my_area;
+                /* Beside me, height included: a partner passing overhead in a
+                   warp's sky hops hasn't arrived. */
+                float mx = pos[0] - me[0], my = pos[1] - me[1], mz = pos[2] - me[2];
+                bool by_me = mx * mx + my * my + mz * mz < 30.0f * 30.0f && area == my_area;
                 float lx = w.last_pos[0] - me[0], ly = w.last_pos[1] - me[1], lz = w.last_pos[2] - me[2];
                 if (area != w.last_area) {
                     if (w.last_area == ow && area != ow) notify::Show("%s went into a shrine", p.name);

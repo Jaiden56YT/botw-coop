@@ -1,5 +1,6 @@
 #include "player.hpp"
 
+#include <atomic>
 #include <cmath>
 #include <cstring>
 
@@ -8,6 +9,46 @@
 #include "offsets.hpp"
 
 namespace coop::game {
+
+    namespace {
+        bool LooksLikePointer(uintptr_t p) { return p > 0x10000 && (p & 7) == 0; }
+        std::atomic<int> g_BodyVia{0}; /* 1 = actor chain, 2 = global chain (logged when it changes) */
+    }
+
+    uintptr_t LinkRigidBody() {
+        uintptr_t base = exl::util::GetMainModuleInfo().m_Total.m_Start;
+        auto rd = [](uintptr_t a) { return *reinterpret_cast<const uintptr_t*>(a); };
+        uintptr_t vtable = base + offsets::HkRigidBody_Vtable;
+        uintptr_t body = 0;
+        int via = 0;
+        uintptr_t info = rd(base + offsets::PlayerInfoInstance);
+        uintptr_t actor = info ? rd(info + offsets::PlayerInfo_PlayerActor) : 0;
+        if (actor) {
+            uintptr_t phys = rd(actor + offsets::Actor_Physics);
+            uintptr_t chr = LooksLikePointer(phys) ? rd(phys + offsets::Physics_ToCharacter) : 0;
+            uintptr_t b = LooksLikePointer(chr) ? rd(chr + offsets::Character_ToBody) : 0;
+            if (LooksLikePointer(b) && rd(b) == vtable) body = b, via = 1;
+        }
+        if (!body) {
+            uintptr_t g = rd(base + offsets::HavokPos_Global);
+            uintptr_t a = g ? rd(g + offsets::HavokPos_A) : 0;
+            uintptr_t b = a ? rd(a + offsets::HavokPos_B) : 0;
+            if (LooksLikePointer(b)) {
+                b += offsets::HavokPos_Pos - offsets::HkBody_Pos;
+                if (rd(b) == vtable) body = b, via = 2;
+            }
+        }
+        if (body && g_BodyVia.exchange(via) != via) {
+            /* What the global table holds, to compare (it's the same body on a console). */
+            uintptr_t g = rd(base + offsets::HavokPos_Global);
+            uintptr_t a = g ? rd(g + offsets::HavokPos_A) : 0;
+            uintptr_t t = a ? rd(a + offsets::HavokPos_B) : 0;
+            if (t) t += offsets::HavokPos_Pos - offsets::HkBody_Pos;
+            Logging.Log("[coop] player: Link's body %p, found from %s (the global table has %p)", reinterpret_cast<void*>(body),
+                        via == 1 ? "his actor" : "the global table", reinterpret_cast<void*>(t));
+        }
+        return body;
+    }
 
     bool GetLocalPlayer(float (&pos)[3], float* rot_y) {
         uintptr_t base = exl::util::GetMainModuleInfo().m_Total.m_Start;

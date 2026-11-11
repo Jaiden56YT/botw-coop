@@ -12,6 +12,7 @@
 #include "notify.hpp"
 #include "offsets.hpp"
 #include "player.hpp"
+#include "warp.hpp"
 
 namespace coop::game::meals {
 
@@ -159,7 +160,10 @@ namespace coop::game::meals {
         /* Our own meal: hearts went up while the menu is open. */
         s32 cur = *life;
         if (g_LastLife >= 0 && cur > g_LastLife) {
-            bool menu = items::InMenu(now);
+            /* Not a meal: coming back from no hearts at all (nobody eats at
+               zero; it reads 0 for a moment around a warp), or anything while
+               warping, when a slow load looks like the menu. */
+            bool menu = items::InMenu(now) && g_LastLife > 0 && !warp::Busy(now);
             Logging.Log("[coop] meals: hearts %d -> %d%s", g_LastLife, cur, menu ? " in the menu (a meal)" : "");
             if (menu) {
                 g_Eaten += cur - g_LastLife;
