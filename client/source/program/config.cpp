@@ -59,6 +59,7 @@ namespace coop {
             else if (is("test_keys")) Copy(out.test_keys, sizeof(out.test_keys), val, vlen);
             else if (is("test_drop")) Copy(out.test_drop, sizeof(out.test_drop), val, vlen);
             else if (is("beasts_anywhere")) out.beasts_anywhere = IsTrue(val, vlen);
+            else if (is("log_file")) out.log_file = IsTrue(val, vlen);
             else if (is("test_gate")) Copy(out.test_gate, sizeof(out.test_gate), val, vlen);
             else if (is("test_heal")) {
                 char tmp[8];
@@ -176,6 +177,7 @@ namespace coop {
         out.test_research = 0;
         out.test_heal = 0;
         out.beasts_anywhere = false;
+        out.log_file = false;
         out.test_gate[0] = '\0';
 
         bool from_file = ReadConfigFile(out);

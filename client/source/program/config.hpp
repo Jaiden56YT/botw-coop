@@ -20,6 +20,7 @@ namespace coop {
         char test_bind[64];   /* debug: "Weapon:Bone", bind that weapon to Link's bone */
         char test_keys[256];  /* debug: buttons to press once in the world, e.g. "Plus,L,L,A:300,Plus" */
         char test_drop[64];   /* debug: spawn this item at Link's feet as if dropped from the inventory */
+        bool log_file;        /* also write the log to sd:/botw-coop/log.txt (a Switch has no other way to show it) */
         bool beasts_anywhere; /* share Divine Beast clears with partners who weren't inside with you */
         char test_gate[64];   /* debug: flag that stands in for "has the paraglider" (progress is held until it's set) */
         int test_heal;        /* debug: once a partner is near, drop to this life (quarter hearts) to test shared meals */

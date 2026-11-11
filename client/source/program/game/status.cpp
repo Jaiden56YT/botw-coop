@@ -76,12 +76,17 @@ namespace coop::game::status {
                 bool jumped = jx * jx + jz * jz > 300.0f * 300.0f;
                 float mx = pos[0] - me[0], mz = pos[2] - me[2];
                 bool by_me = mx * mx + mz * mz < 30.0f * 30.0f && area == my_area;
+                float lx = w.last_pos[0] - me[0], ly = w.last_pos[1] - me[1], lz = w.last_pos[2] - me[2];
                 if (area != w.last_area) {
                     if (w.last_area == ow && area != ow) notify::Show("%s went into a shrine", p.name);
                     else if (area == ow && w.last_area != ow) {
                         if (my_area == ow) notify::Show("%s is back outside, %s away", p.name, dist);
                         else notify::Show("%s is back outside", p.name);
                     }
+                } else if (by_me && area == my_area && lx * lx + ly * ly + lz * lz > 100.0f * 100.0f) {
+                    /* A warp over 250 m comes in hops, none of them a "jump": what
+                       shows it is being far away one moment and beside you the next. */
+                    notify::Show("%s warped to you", p.name);
                 } else if (jumped) {
                     if (by_me) notify::Show("%s warped to you", p.name);
                     else if (area == my_area) notify::Show("%s traveled: %s away (hold L3 to follow)", p.name, dist);

@@ -34,16 +34,33 @@ CONFIG="$RYU/mods/contents/01007ef00011e000/botw-coop/romfs/botw-coop/config.ini
 if [ ! -f "$CONFIG" ]; then
     mkdir -p "$(dirname "$CONFIG")"
     cat > "$CONFIG" <<'INI'
-# botw-coop settings
+# botw-coop settings. How to play: docs/PLAYING.md
+
+# The name your partners see.
 name = Link
+
+# Where the relay server is. The player who runs it uses 127.0.0.1; everyone
+# else uses that player's address (same Wi-Fi, Tailscale or ZeroTier).
 server = 127.0.0.1
 port = 7777
+
+# Everyone with the same password plays together.
 password = hyrule
-# Actor shown in place of other players. CoopPlayer (built by
-# tools/build_romfs_mod.py) is Link without physics, animated from the other
-# player's movement. CoopGhost is a Sheikah monk stand-in.
+
+# Keep co-op in its own copy of your saves, so your normal saves are never
+# changed. Set to false to play (and change) your normal saves.
+separate_save = true
+
+# How many backups of the co-op saves to keep (one is made each time the game
+# starts). 0 to 3. A real Switch only has room for 1.
+backups = 3
+
+# A Divine Beast only counts for players who are inside it together. Set to
+# true to give its Champion ability to partners anywhere.
+beasts_anywhere = false
+
+# The rest is for development (the full list is in the README).
 ghost_actor = CoopPlayer
-# Debug: show a ghost of yourself, about 1 second behind you.
 echo = false
 INI
     echo "Wrote default settings to $CONFIG"

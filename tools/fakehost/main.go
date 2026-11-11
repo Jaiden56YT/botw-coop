@@ -43,6 +43,9 @@ func f32(b []byte, v float32) { binary.LittleEndian.PutUint32(b, math.Float32bit
 // When another player first reported a position (UnixNano), for timed gifts.
 var firstState atomic.Int64
 
+// The last "map stamps" line logged, so repeats stay quiet.
+var lastStampLine string
+
 // Where a downed player is (set by the reader, used by -rescue).
 var rescueAt atomic.Value
 
@@ -56,19 +59,23 @@ func main() {
 	tour := flag.Bool("tour", false, "cycle stand / walk / run / sprint every 6 s instead of a steady jog")
 	flagList := flag.String("flags", "", "comma-separated progress flags to share 25 s after joining (e.g. MapTower_01)")
 	shrineAt := flag.Int("shrine-at", 0, "if > 0: after this many seconds, report being inside a shrine (CDungeon/Dungeon000) for 20 s, then back outside")
-	enemy := flag.String("enemy", "", "HASH:LIFE (hex hash): 15 s after joining, report that this overworld enemy now has LIFE")
+	enemy := flag.String("enemy", "", "HASH:LIFE (hex hash): 30 s after a player is first in the world, report that this overworld enemy now has LIFE")
 	weather := flag.Int("weather", -1, "weather to host (0 Bluesky, 1 Cloudy, 2 Rain, 3 HeavyRain, 4 Snow, 5 HeavySnow, 6 ThunderStorm, 7 ThunderRain, 8 BlueskyRain); -1 = none")
 	climate := flag.Int("climate", 0, "the host's climate number (weather is only shared within one climate)")
 	actions := flag.Bool("actions", false, "cycle the reported action (attack 1-3, finisher, spin, charge, bow aim, bow shoot, throw aim, throw, guard) every 3 s while standing")
 	gear := flag.String("gear", "", "HEAD,UPPER,LOWER armor actor names the fake player wears (e.g. Armor_001_Head,Armor_151_Upper,Armor_155_Lower), sent every 5 s")
 	still := flag.Bool("still", false, "stand still (at center + 6 m on x)")
 	bloody := flag.Bool("bloody", false, "host a Blood Moon tonight (WM_BloodyDay)")
+	giftBonus := flag.String("gift-bonus", "", "FLAGS:VALUE:DURABILITY for -gift (a weapon): its bonus (hex flags: 1 attack, 2 durability, 10 multi-shot, 100 guard; add 80000000 for the stronger kind), the bonus value and the durability x100, e.g. 80000001:44:7900")
+	giftAt := flag.Int("gift-at", 15, "seconds after a player is first in the world to send -gift")
 	gift := flag.String("gift", "", "weapon or item actor name to give every other player 15 s after one is first in the world (e.g. Weapon_Sword_001, Item_Fruit_A)")
 	enemyCircle := flag.String("enemy-circle", "", "HASH:X,Y,Z (hex hash): claim this placed enemy and send it walking a 3 m circle around X,Y,Z, 10 times a second")
 	heal := flag.Int("heal", 0, "if > 0: share a meal of this many quarter hearts with everyone every 20 s, once a player is in the world")
 	rescue := flag.Bool("rescue", false, "when a player goes down, walk over to them 3 s later (and stand 1 m away)")
 	jumpAt := flag.Int("jump-at", 0, "if > 0: after this many seconds, jump 1.5 km east (like fast travel)")
 	animFixed := flag.Int("anim", 0, "report this movement state all the time (13 = down)")
+	stamp := flag.String("stamp", "", "ICON:X,Y,Z: have this stamp on the fake player's map (icons 27-35, 37-41), sent every 5 s")
+	stampFor := flag.Int("stamp-for", 100000, "remove the -stamp again after this many seconds")
 	hurt := flag.Bool("hurt", false, "20 hearts, dropping to 2.5 hearts for 20 s every 40 s (for the low-hearts warning)")
 	ride := flag.Bool("ride", false, "report riding a horse (movement state 11)")
 	anims := flag.Bool("anims", false, "cycle the reported movement state (every one: stand, move, climb, swim, glide, jump, fall, horse, surf) every 5 s")
@@ -118,9 +125,29 @@ func main() {
 			case 31:
 				log.Printf("player %d shared flag %s", body[0], body[4:])
 			case 36:
-				log.Printf("player %d gave player %d: %s", body[0], body[1], body[4:])
+				n := int(binary.LittleEndian.Uint16(body[2:]))
+				line := fmt.Sprintf("player %d gave player %d: %s", body[0], body[1], body[4:4+n])
+				if rest := body[4+n:]; len(rest) >= 12 {
+					line += fmt.Sprintf(" (bonus flags %x, value %d, durability %d)", binary.LittleEndian.Uint32(rest),
+						int32(binary.LittleEndian.Uint32(rest[4:])), int32(binary.LittleEndian.Uint32(rest[8:])))
+				}
+				log.Print(line)
 			case 33:
 				log.Printf("player %d went down and was revived (partner nearby)", body[0])
+			case 40:
+				if len(body) >= 2 {
+					n := int(body[1])
+					line := fmt.Sprintf("player %d has %d map stamps", body[0], n)
+					if n > 0 && len(body) >= 2+13 {
+						x := math.Float32frombits(binary.LittleEndian.Uint32(body[3:]))
+						z := math.Float32frombits(binary.LittleEndian.Uint32(body[11:]))
+						line += fmt.Sprintf(", first: icon %d at (%.0f, %.0f)", body[2], x, z)
+					}
+					if line != lastStampLine {
+						lastStampLine = line
+						log.Print(line)
+					}
+				}
 			case 39:
 				if len(body) >= 15 {
 					x := math.Float32frombits(binary.LittleEndian.Uint32(body[2:]))
@@ -159,6 +186,7 @@ func main() {
 	lastWorld := time.Time{}
 	lastGear := time.Time{}
 	lastEnemy := time.Time{}
+	lastStamp := time.Time{}
 	lastHeal := time.Time{}
 	rescueSince := time.Time{}
 	jumped := false
@@ -248,6 +276,27 @@ func main() {
 			conn.Write(msg(38, p))
 			log.Printf("shared a meal: %d quarter hearts", *heal)
 		}
+		if *stamp != "" && now.Sub(lastStamp) >= 5*time.Second {
+			lastStamp = now
+			sp := strings.SplitN(*stamp, ":", 2)
+			icon, _ := strconv.Atoi(sp[0])
+			xyz := strings.Split(sp[1], ",")
+			p := []byte{0, byte(icon)}
+			n := byte(0)
+			if time.Since(start) < time.Duration(*stampFor)*time.Second {
+				n = 1
+				for i := 0; i < 3; i++ {
+					f, _ := strconv.ParseFloat(xyz[i], 32)
+					b := make([]byte, 4)
+					f32(b, float32(f))
+					p = append(p, b...)
+				}
+			} else {
+				p = p[:1]
+			}
+			p[0] = n
+			conn.Write(msg(40, p))
+		}
 		if *enemyCircle != "" && now.Sub(lastEnemy) >= 100*time.Millisecond {
 			lastEnemy = now
 			hp := strings.SplitN(*enemyCircle, ":", 2)
@@ -281,17 +330,27 @@ func main() {
 			}
 			conn.Write(msg(34, p))
 		}
-		if fs := firstState.Load(); !giftSent && fs != 0 && time.Since(time.Unix(0, fs)) > 15*time.Second {
+		if fs := firstState.Load(); !giftSent && fs != 0 && time.Since(time.Unix(0, fs)) > time.Duration(*giftAt)*time.Second {
 			giftSent = true
 			for to := 1; to <= 4; to++ {
 				p := []byte{byte(to), 0, 0}
 				binary.LittleEndian.PutUint16(p[1:], uint16(len(*gift)))
 				p = append(p, *gift...)
+				if *giftBonus != "" {
+					var flags uint32
+					var value, dur int32
+					if _, err := fmt.Sscanf(*giftBonus, "%x:%d:%d", &flags, &value, &dur); err != nil {
+						log.Fatalf("bad -gift-bonus %q: %v", *giftBonus, err)
+					}
+					p = binary.LittleEndian.AppendUint32(p, flags)
+					p = binary.LittleEndian.AppendUint32(p, uint32(value))
+					p = binary.LittleEndian.AppendUint32(p, uint32(dur))
+				}
 				conn.Write(msg(36, p))
 			}
 			log.Printf("gave everyone %s", *gift)
 		}
-		if !enemySent && time.Since(start) > 15*time.Second {
+		if fs := firstState.Load(); !enemySent && fs != 0 && time.Since(time.Unix(0, fs)) > 30*time.Second {
 			enemySent = true
 			var h uint32
 			var life int32

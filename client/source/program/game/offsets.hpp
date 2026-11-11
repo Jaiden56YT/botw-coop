@@ -155,6 +155,22 @@ namespace coop::game::offsets {
        and no modifier, loading the manager through this GOT slot. */
     constexpr uintptr_t PauseMenuDataMgr_ItemGet = 0xd921bc;
     constexpr uintptr_t Got_PauseMenuDataMgrInstance = 0x1d67af0;
+    /* The manager and its items are laid out as in the 1.5.0 decomp (checked
+       by walking the list at runtime: 320 items on a 100% save, names and
+       bonuses as the inventory shows them). For a weapon, itemGet's count is
+       its durability. */
+    constexpr uintptr_t PauseMenuDataMgr_CritSection = 0x28; /* sead::CriticalSection (its mutex at +0x20 read 0x101); held while the menu is open */
+    constexpr uintptr_t PauseMenuDataMgr_Items = 0x98;       /* PouchItem[420], right after the two lists */
+    constexpr uintptr_t PouchItem_Size = 0x298;
+    constexpr uintptr_t PauseMenuDataMgr_ItemList = 0x68;    /* sead::OffsetList<PouchItem>: node {prev,next}, s32 count, s32 node offset (8) */
+    constexpr uintptr_t PouchItem_Type = 0x18;          /* s32: 0 sword, 1 bow, 2 arrow, 3 shield, .. */
+    constexpr uintptr_t PouchItem_Value = 0x20;         /* s32: durability x100 for weapons, count for stacks */
+    constexpr uintptr_t PouchItem_Equipped = 0x24;      /* bool */
+    constexpr uintptr_t PouchItem_Name = 0x30;          /* const char* (FixedSafeString<64> at 0x28) */
+    constexpr uintptr_t PouchItem_ModifierValue = 0x80; /* s32: +44 attack, 5 arrows, .. */
+    constexpr uintptr_t PouchItem_ModifierFlags = 0x88; /* u32 WeaponModifier: 1 attack, 2 durability, 4 critical, 8 long throw,
+                                                           0x10 multi-shot, 0x20 zoom, 0x40 quick shot, 0x80 surf, 0x100 guard;
+                                                           0x80000000 = the stronger (yellow) kind */
 
     /* On-screen info banner (the "The Master Sword has returned to the forest"
        line). Found from the MainScreen_00 message table (0x1daa3b0: 0x31

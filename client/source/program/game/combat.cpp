@@ -67,7 +67,10 @@ namespace coop::game::combat {
         }
 
         /* Last life seen for each placed enemy (open addressing on HashId). */
-        struct Known { u32 hash; s32 life; };
+        /* `hurt`: we've seen its life go down (here or from a partner) and not
+           back up. Only those are told again: an enemy that isn't awake yet
+           reads life 1 of 360, which is no news to anyone. */
+        struct Known { u32 hash; s32 life; bool hurt; };
         constexpr int TableSize = 2048;
         Known g_Table[TableSize];
         u32 g_TableArea = 0;
@@ -78,7 +81,7 @@ namespace coop::game::combat {
                 if (g_Table[i].hash == hash) return &g_Table[i];
                 if (g_Table[i].hash == 0) {
                     if (!insert) return nullptr;
-                    g_Table[i] = {hash, -1};
+                    g_Table[i] = {hash, -1, false};
                     return &g_Table[i];
                 }
             }
@@ -92,6 +95,28 @@ namespace coop::game::combat {
         int g_RemoteCount = 0;
         nn::os::MutexType g_Mutex;
         bool g_MutexReady = false;
+
+        /* Enemies killed lately (here or by a partner), told again now and
+           then: a partner who was far away, joined later or reloaded a save
+           still has them alive. */
+        struct Kill { u32 area, hash; s64 at; };
+        constexpr int MaxKills = 32;
+        /* Not for long: after a Blood Moon the same enemy is alive again, and
+           a stale "dead" would kill it in a partner's world. */
+        constexpr s64 KillMemoryMs = 3 * 60 * 1000;
+        Kill g_Kills[MaxKills];
+        int g_KillNext = 0;
+        constexpr s64 RepeatMs = 15000;
+        s64 g_NextRepeat = 0;
+
+        void RememberKill(u32 area, u32 hash, s64 now) {
+            for (auto& k : g_Kills)
+                if (k.hash == hash && k.area == area) {
+                    k.at = now;
+                    return;
+                }
+            g_Kills[g_KillNext++ % MaxKills] = {area, hash, now};
+        }
 
         bool g_LogNearby = false;
         bool g_Logged = false;
@@ -133,6 +158,10 @@ namespace coop::game::combat {
             nn::os::UnlockMutex(&g_Mutex);
         }
 
+        /* Every 15 s: say again what we know that others may have missed. */
+        bool repeat = now >= g_NextRepeat;
+        if (repeat) g_NextRepeat = now + RepeatMs;
+
         constexpr int MaxOut = 64;
         u32 out_hash[MaxOut];
         s32 out_life[MaxOut];
@@ -157,8 +186,19 @@ namespace coop::game::combat {
                     *life = cur;
                     applied++;
                     if (cur == 0 && nkill < 16) kill[nkill++] = a;
+                    k->hurt = true;
                 }
                 k->life = cur;
+            }
+            /* Alive here well after we saw it die: it respawned (a Blood Moon). */
+            if (cur > 0)
+                for (auto& kl : g_Kills)
+                    if (kl.hash == hash && kl.area == area && now - kl.at > 20000) kl.hash = 0;
+            /* The repeat: every hurt enemy near us, as it is now. */
+            if (repeat && k->hurt && cur > 0 && cur < MaxLife(a) && nout < MaxOut) {
+                out_hash[nout] = hash;
+                out_life[nout] = cur;
+                nout++;
             }
             if (k->life < 0) {
                 k->life = cur; /* first sighting */
@@ -170,8 +210,10 @@ namespace coop::game::combat {
                     nout++;
                 }
                 k->life = cur;
+                k->hurt = true;
             } else if (cur > k->life) {
                 k->life = cur; /* healed or respawned (Blood Moon) */
+                k->hurt = false;
             }
         });
         if (!scanned) {
@@ -181,6 +223,7 @@ namespace coop::game::combat {
             return;
         }
         for (int i = 0; i < nout; i++) {
+            if (out_life[i] <= 0) RememberKill(area, out_hash[i], now);
             net::SendEnemyLife(area, out_hash[i], out_life[i]);
             if (g_LogNearby) Logging.Log("[coop] combat: enemy %08x hurt here, life %d", out_hash[i], out_life[i]);
         }
@@ -191,9 +234,21 @@ namespace coop::game::combat {
             bool alive = false;
             ForEachActor([&](uintptr_t b) { alive |= b == a; });
             if (!alive) continue;
+            RememberKill(area, Read<u32>(a + offsets::Actor_HashId), now);
             reinterpret_cast<KillFn>(Virtual<KillFn>(a, offsets::ActorVt_Kill))(a, 0);
             Logging.Log("[coop] combat: %s killed by a partner", Name(a));
         }
+
+        /* And the recent kills (they aren't actors here any more). */
+        if (repeat)
+            for (auto& k : g_Kills) {
+                if (!k.hash || k.area != area) continue;
+                if (now - k.at > KillMemoryMs) {
+                    k.hash = 0;
+                    continue;
+                }
+                net::SendEnemyLife(area, k.hash, 0);
+            }
 
         if (g_LogNearby && now >= g_NextLog) {
             g_NextLog = now + 10000;

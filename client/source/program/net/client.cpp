@@ -7,6 +7,7 @@
 #include <lib.hpp>
 #include <nn/os.hpp>
 #include <nn/socket.hpp>
+#include <program/filelog.hpp>
 
 #include "../config.hpp"
 #include "../game/player.hpp"
@@ -21,6 +22,7 @@
 #include "../game/notify.hpp"
 #include "../game/research.hpp"
 #include "../game/meals.hpp"
+#include "../game/map.hpp"
 
 namespace coop::net {
 
@@ -68,6 +70,8 @@ namespace coop::net {
         bool g_RevivedPending = false;
         u32 g_HealPending = 0;
         bool g_RejectShown = false;
+        SharedStamp g_StampsOut[MaxSharedStamps];
+        int g_StampsOutCount = -1; /* -1 = nothing to send */
         struct DownedOut { u8 state; float pos[3]; u8 left; };
         DownedOut g_DownedOut[4];
         int g_DownedOutCount = 0;
@@ -75,7 +79,7 @@ namespace coop::net {
         WeaponPose g_WeaponsOut[MaxWeapons];
         int g_WeaponsOutCount = 0;
         bool g_WeaponsPending = false;
-        struct GiftOut { u8 to; char name[32]; };
+        struct GiftOut { u8 to; char name[32]; bool has_bonus; GiftBonus bonus; };
         GiftOut g_GiftsOut[4];
         int g_GiftsOutCount = 0;
         bool g_GearPending = false;
@@ -99,7 +103,11 @@ namespace coop::net {
             ~ScopedLock() { nn::os::UnlockMutex(&g_Mutex); }
         };
 
-        void Sleep(s64 ms) { nn::os::SleepThread(nn::TimeSpan::FromMilliSeconds(ms)); }
+        /* Every wait on this thread is also a chance to write the log file. */
+        void Sleep(s64 ms) {
+            filelog::Flush();
+            nn::os::SleepThread(nn::TimeSpan::FromMilliSeconds(ms));
+        }
 
         s64 NowMs() {
             return nn::os::ConvertToTimeSpan(nn::os::GetSystemTick()).GetMilliSeconds();
@@ -120,6 +128,10 @@ namespace coop::net {
             size_t len = w.Finish();
             return len != 0 && SendAll(g_SendBuf, len);
         }
+
+        /* For the "can't reach the server" banner (a Switch shows no log). */
+        int g_FailedTries = 0;
+        bool g_FailShown = false;
 
         void Disconnect(const char* why) {
             if (g_Fd >= 0) {
@@ -206,6 +218,9 @@ namespace coop::net {
                     if (count > 0) game::progress::OnPlayerJoined();
                     if (count == 1) game::notify::Show("Co-op: %s is here", first);
                     else if (count > 1) game::notify::Show("Co-op: %d partners are here", count);
+                    else game::notify::Show("Co-op: connected. Waiting for a partner");
+                    g_FailedTries = 0;
+                    g_FailShown = false;
                     return r.Ok();
                 }
                 case MsgType::Reject: {
@@ -340,7 +355,10 @@ namespace coop::net {
                         if (to != g_MyId) return true;
                         if (Peer* p = FindPeer(from)) std::memcpy(who, p->name, sizeof(who));
                     }
-                    game::weapons::OnGift(who, weapon);
+                    GiftBonus bonus{};
+                    bool has_bonus = r.Left() >= sizeof(GiftBonus);
+                    if (has_bonus) bonus = r.Get<GiftBonus>();
+                    game::weapons::OnGift(who, weapon, has_bonus ? &bonus : nullptr);
                     return true;
                 }
                 case MsgType::Weapons: {
@@ -365,6 +383,21 @@ namespace coop::net {
                         std::memcpy(p->weapons, poses, sizeof(poses));
                         p->weapon_count = static_cast<u8>(n);
                     }
+                    return true;
+                }
+                case MsgType::Stamps: {
+                    u8 from = r.Get<u8>();
+                    u8 count = r.Get<u8>();
+                    SharedStamp list[MaxSharedStamps];
+                    int n = 0;
+                    for (u8 i = 0; i < count && r.Ok(); i++) {
+                        SharedStamp st{};
+                        st.icon = r.Get<u8>();
+                        for (float& f : st.pos) f = r.Get<float>();
+                        if (n < MaxSharedStamps) list[n++] = st;
+                    }
+                    if (!r.Ok()) return false;
+                    game::map::OnRemoteStamps(from, list, n);
                     return true;
                 }
                 case MsgType::Downed: {
@@ -476,6 +509,8 @@ namespace coop::net {
             u16 send_heal = 0;
             DownedOut downed[4];
             int ndowned = 0;
+            SharedStamp stamps_out[MaxSharedStamps];
+            int nstamps_out = -1;
             char gear[3][32];
             bool send_gear = false;
             WeaponPose weapons[MaxWeapons];
@@ -522,6 +557,11 @@ namespace coop::net {
                     g_GearPending = false;
                     send_gear = true;
                 }
+                if (g_Connected && g_StampsOutCount >= 0) {
+                    nstamps_out = g_StampsOutCount;
+                    std::memcpy(stamps_out, g_StampsOut, sizeof(stamps_out));
+                    g_StampsOutCount = -1;
+                }
                 if (g_Connected) {
                     ndowned = g_DownedOutCount;
                     std::memcpy(downed, g_DownedOut, sizeof(downed));
@@ -567,6 +607,7 @@ namespace coop::net {
                 Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Gift);
                 w.U8(gifts[i].to);
                 w.Str(gifts[i].name);
+                if (gifts[i].has_bonus) w.Bytes(&gifts[i].bonus, sizeof(GiftBonus));
                 if (!SendMsg(w)) return false;
             }
             if (send_weapons) {
@@ -582,6 +623,15 @@ namespace coop::net {
             if (send_gear) {
                 Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Gear);
                 for (auto& part : gear) w.Str(part);
+                if (!SendMsg(w)) return false;
+            }
+            if (nstamps_out >= 0) {
+                Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Stamps);
+                w.U8(static_cast<u8>(nstamps_out));
+                for (int i = 0; i < nstamps_out; i++) {
+                    w.U8(stamps_out[i].icon);
+                    w.Bytes(stamps_out[i].pos, 12);
+                }
                 if (!SendMsg(w)) return false;
             }
             for (int i = 0; i < ndowned; i++) {
@@ -641,13 +691,16 @@ namespace coop::net {
             nn::nifm::SubmitNetworkRequest();
             while (nn::nifm::IsNetworkRequestOnHold()) Sleep(100);
             if (!nn::nifm::IsNetworkAvailable()) {
-                Logging.Log("[coop] no network. In Ryujinx, turn on Guest Internet Access.");
+                Logging.Log("[coop] no network. In Ryujinx, turn on Guest Internet Access; on a Switch, connect to Wi-Fi.");
                 return false;
             }
-            Result rc = nn::socket::Initialize(g_SocketPool, SocketPoolSize, SocketAllocPoolSize, 14);
-            if (rc != 0) {
-                Logging.Log("[coop] socket init failed: 0x%x", rc);
-                return false;
+            /* Once. A failure can mean the game set sockets up itself already,
+               so it isn't the end: connecting is tried anyway. */
+            static bool s_tried = false;
+            if (!s_tried) {
+                s_tried = true;
+                Result rc = nn::socket::Initialize(g_SocketPool, SocketPoolSize, SocketAllocPoolSize, 14);
+                if (rc != 0) Logging.Log("[coop] socket init returned 0x%x; trying to connect anyway", rc);
             }
             return true;
         }
@@ -703,6 +756,7 @@ namespace coop::net {
             /* Give the game time to set up its file system before we touch the SD card. */
             Sleep(3000);
             LoadSettings(g_Config);
+            filelog::Enable(g_Config.log_file);
             {
                 game::GhostSettings gs{};
                 std::memcpy(gs.actor_name, g_Config.ghost_actor, sizeof(gs.actor_name));
@@ -724,7 +778,10 @@ namespace coop::net {
                 game::items::SetTest(g_Config.test_drop);
                 game::SetKeyScript(g_Config.test_keys);
             }
-            while (!InitNetwork()) Sleep(5000);
+            for (int tries = 0; !InitNetwork(); tries++) {
+                if (tries == 2) game::notify::Show("Co-op: no network connection");
+                Sleep(5000);
+            }
 
             s64 retry_ms = 1000;
             while (true) {
@@ -733,6 +790,11 @@ namespace coop::net {
                     char why[48];
                     std::snprintf(why, sizeof(why), "connect failed (errno %d)", (int)nn::socket::GetLastError());
                     Disconnect(why);
+                    /* Said once, after a few tries; again only after a connection that worked. */
+                    if (++g_FailedTries == 3 && !g_FailShown) {
+                        g_FailShown = true;
+                        game::notify::Show("Co-op: can't reach the server at %s:%d", g_Config.host, g_Config.port);
+                    }
                     Sleep(retry_ms);
                     retry_ms = retry_ms * 2 > 10000 ? 10000 : retry_ms * 2;
                     continue;
@@ -740,11 +802,12 @@ namespace coop::net {
                 retry_ms = 1000;
 
                 s64 last_ping = NowMs();
-                s64 last_sample = 0, last_report = NowMs();
+                s64 last_sample = 0, last_report = NowMs(), last_flush = 0;
                 while (true) {
                     s64 now = NowMs();
                     if (now - last_sample >= 33) { last_sample = now; SamplePlayer(); }
                     if (now - last_report >= 5000) { last_report = now; LogPeers(); }
+                    if (now - last_flush >= 2000) { last_flush = now; filelog::Flush(); }
                     bool idle = false;
                     if (!Flush() || !Pump(&idle)) break;
                     if (NowMs() - last_ping >= 2000) {
@@ -792,10 +855,12 @@ namespace coop::net {
         g_FlagCount++;
     }
 
-    void SendGift(u8 to, const char* weapon) {
+    void SendGift(u8 to, const char* weapon, const GiftBonus* bonus) {
         ScopedLock lock;
         if (g_GiftsOutCount >= 4) return;
         g_GiftsOut[g_GiftsOutCount].to = to;
+        g_GiftsOut[g_GiftsOutCount].has_bonus = bonus != nullptr;
+        if (bonus) g_GiftsOut[g_GiftsOutCount].bonus = *bonus;
         std::strncpy(g_GiftsOut[g_GiftsOutCount].name, weapon, 31);
         g_GiftsOut[g_GiftsOutCount].name[31] = '\0';
         g_GiftsOutCount++;
@@ -817,6 +882,13 @@ namespace coop::net {
             g_GearOut[i][31] = '\0';
         }
         g_GearPending = true;
+    }
+
+    void SendStamps(const SharedStamp* stamps, int count) {
+        ScopedLock lock;
+        if (count > MaxSharedStamps) count = MaxSharedStamps;
+        std::memcpy(g_StampsOut, stamps, count * sizeof(stamps[0]));
+        g_StampsOutCount = count;
     }
 
     void SendDowned(u8 state, const float* pos, u8 seconds_left) {

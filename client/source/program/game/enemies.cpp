@@ -53,6 +53,8 @@ namespace coop::game::enemies {
             s64 yield_until;  /* a lower-id partner owns it */
             s64 body_tried;
             int tries;
+            uintptr_t cand;   /* during a search: the nearest body seen so far, 0 = none */
+            float cand_d;     /* and its distance, squared */
         };
         constexpr int LocalSize = 128;
         Local g_Local[LocalSize];
@@ -99,28 +101,136 @@ namespace coop::game::enemies {
             return y ? y + offsets::HavokPos_Pos - offsets::HkBody_Pos : 0;
         }
 
-        /* One pass over memory: for each enemy in `want` (no body yet), the
-           rigid body nearest its position. Only characters have a body of
-           this class (30 m around a camp held Link's and the Bokoblins',
-           nothing else), so the nearest free one within 2 m sideways and 3 m
-           in height is the enemy's own; the offset is kept for bigger enemies
-           whose body isn't at their feet. Learned regions first; the whole
-           address space only when those find nothing. */
+        /* Looking through memory for the rigid bodies of the enemies in
+           `want` (those with none yet). Only characters have a body of this
+           class (30 m around a camp held Link's and the Bokoblins', nothing
+           else), so the nearest free one within 2 m sideways and 3 m in
+           height is the enemy's own; the offset is kept for bigger enemies
+           whose body isn't at their feet.
+
+           Memory is big (a full pass took 170 ms on a fast Mac, and a real
+           Switch is several times slower), so the search is spread over
+           frames: each call looks for at most SweepBudgetMs and carries on
+           where the last one stopped. Order: around Link's own body (bodies
+           are made close together), then the regions where bodies were found
+           before, then - at most every 30 s - everything else. It ends early
+           once every wanted enemy has a body right at its position. */
         constexpr float BodyNear = 2.0f, BodyNearY = 3.0f, ExactDist = 0.25f;
+        constexpr s64 SweepBudgetMs = 3;
+        constexpr uintptr_t SweepChunk = 0x40000;      /* looked at between two looks at the clock */
+        constexpr uintptr_t LinkWindow = 0x800000;     /* this far either side of Link's body first */
         s64 g_LastFullScan = -100000;
+        struct Sweep {
+            bool active;
+            int phase;          /* 0 = around Link, 1 = known regions, 2 = everything */
+            int region;         /* phase 1: next known region */
+            u64 query;          /* phase 2: next address to ask the kernel about */
+            uintptr_t pos, end; /* what's left of the piece being looked at */
+            s64 started;
+            int calls;
+        } g_Sweep;
+
+        /* The next piece of memory to look at; false when there's no more. */
+        bool SweepNext(s64 now) {
+            Sweep& sw = g_Sweep;
+            if (sw.phase == 0) {
+                sw.phase = 1;
+                uintptr_t link = LinkBody();
+                MemoryInfo mi{};
+                u32 page = 0;
+                if (link && R_SUCCEEDED(svcQueryMemory(&mi, &page, link)) && (mi.perm & Perm_Rw) == Perm_Rw) {
+                    sw.pos = link > mi.addr + LinkWindow ? link - LinkWindow : mi.addr;
+                    sw.end = link + LinkWindow < mi.addr + mi.size ? link + LinkWindow : mi.addr + mi.size;
+                    return true;
+                }
+            }
+            if (sw.phase == 1) {
+                if (sw.region < g_BodyRegionCount) {
+                    sw.pos = g_BodyRegions[sw.region].start;
+                    sw.end = g_BodyRegions[sw.region].end;
+                    sw.region++;
+                    return true;
+                }
+                /* Everything else only if nothing has turned up, and not often. */
+                for (int i = 0; i < g_LocalCount; i++)
+                    if (g_Local[i].cand) return false;
+                if (g_BodyRegionCount != 0 && now - g_LastFullScan < 30000) return false;
+                g_LastFullScan = now;
+                sw.phase = 2;
+                sw.query = 0;
+            }
+            for (int guard = 0; guard < 4096; guard++) {
+                MemoryInfo mi{};
+                u32 page = 0;
+                if (R_FAILED(svcQueryMemory(&mi, &page, sw.query))) return false;
+                u64 next = mi.addr + mi.size;
+                if (next <= sw.query) return false;
+                sw.query = next;
+                if ((mi.perm & Perm_Rw) != Perm_Rw || mi.type == MemType_CodeMutable || mi.type == MemType_Io) continue;
+                bool known = false;
+                for (int i = 0; i < g_BodyRegionCount && !known; i++)
+                    known = g_BodyRegions[i].start == mi.addr && g_BodyRegions[i].end == mi.addr + mi.size;
+                if (known) continue; /* looked at in phase 1 */
+                sw.pos = mi.addr;
+                sw.end = mi.addr + mi.size;
+                return true;
+            }
+            return false;
+        }
+
+        void SweepFinish(Local** want, int n, s64 now) {
+            uintptr_t vt = Base() + offsets::HkRigidBody_Vtable;
+            int got = 0;
+            for (int i = 0; i < n; i++) {
+                Local* l = want[i];
+                l->body_tried = now;
+                uintptr_t c = l->cand;
+                l->cand = 0;
+                if (l->tries < 100) l->tries++;
+                if (!c || Read<uintptr_t>(c) != vt) continue;
+                /* Two enemies standing together can both be nearest to one
+                   body: the closer one gets it, the other tries again. */
+                bool lost = false;
+                for (int j = 0; j < n; j++)
+                    if (j != i && want[j]->cand == c && want[j]->cand_d < l->cand_d) lost = true;
+                for (int k = 0; k < g_LocalCount; k++)
+                    if (g_Local[k].body == c) lost = true;
+                if (lost) continue;
+                const float* p = BodyPos(c);
+                const float* m = reinterpret_cast<const float*>(l->actor + offsets::Actor_Mtx);
+                l->body = c;
+                l->tries = 0;
+                l->off[0] = p[0] - m[3], l->off[1] = p[1] - m[7], l->off[2] = p[2] - m[11];
+                NoteRegion(c);
+                got++;
+                if (l->cand_d > 0.25f * 0.25f)
+                    Logging.Log("[coop] enemies: %08x's body is offset by (%.2f, %.2f, %.2f)", l->hash, l->off[0], l->off[1], l->off[2]);
+            }
+            /* Not found is normal for some (a sleeping Stone Talus has no such
+               body): those are asked for less often. */
+            Logging.Log("[coop] enemies: found %d of %d bodies in %lld ms over %d frames%s", got, n, now - g_Sweep.started,
+                        g_Sweep.calls, g_Sweep.phase == 2 ? " (looked everywhere)" : "");
+            g_Sweep.active = false;
+        }
+
         void FindBodies(Local** want, int n, s64 now) {
             if (n == 0) return;
+            Sweep& sw = g_Sweep;
+            if (!sw.active) {
+                sw = {true, 0, 0, 0, 0, 0, now, 0};
+                for (int i = 0; i < g_LocalCount; i++) g_Local[i].cand = 0;
+            }
+            sw.calls++;
             uintptr_t vt = Base() + offsets::HkRigidBody_Vtable;
             uintptr_t link = LinkBody();
-            constexpr int MaxWant = 16;
-            if (n > MaxWant) n = MaxWant;
-            uintptr_t best[MaxWant] = {};
-            float best_d[MaxWant];
-            for (int i = 0; i < n; i++) best_d[i] = 1e9f;
-            int found = 0, exact = 0;
-            auto scan = [&](uintptr_t start, uintptr_t end) {
-                /* Stop early once every enemy has a body right at its position. */
-                for (uintptr_t a = (start + 15) & ~uintptr_t(15); a + 0x300 <= end && exact < n; a += 16) {
+            s64 t0 = NowMs();
+            for (;;) {
+                if (sw.pos >= sw.end && !SweepNext(now)) {
+                    SweepFinish(want, n, now);
+                    return;
+                }
+                uintptr_t stop = sw.pos + SweepChunk < sw.end ? sw.pos + SweepChunk : sw.end;
+                for (uintptr_t a = (sw.pos + 15) & ~uintptr_t(15); a < stop && a + 0x300 <= sw.end; a += 16) {
                     if (Read<uintptr_t>(a) != vt || a == link) continue;
                     bool taken = false;
                     for (int k = 0; k < g_LocalCount && !taken; k++) taken = g_Local[k].body == a;
@@ -132,59 +242,19 @@ namespace coop::game::enemies {
                         float d = dx * dx + dz * dz;
                         if (!(d < BodyNear * BodyNear && dy * dy < BodyNearY * BodyNearY)) continue;
                         d += dy * dy;
-                        if (d < best_d[i]) {
-                            if (!best[i]) found++;
-                            if (d < ExactDist * ExactDist && best_d[i] >= ExactDist * ExactDist) exact++;
-                            best[i] = a;
-                            best_d[i] = d;
-                        }
+                        if (!want[i]->cand || d < want[i]->cand_d) want[i]->cand = a, want[i]->cand_d = d;
                     }
                 }
-            };
-            s64 t0 = NowMs();
-            for (int r = 0; r < g_BodyRegionCount; r++) scan(g_BodyRegions[r].start, g_BodyRegions[r].end);
-            bool full = false;
-            /* Nothing from the known places: look everywhere, but a full pass
-               is slow (up to ~170 ms), so at most every 30 s once any body
-               has been found. */
-            if (found == 0 && (g_BodyRegionCount == 0 || now - g_LastFullScan > 30000)) {
-                g_LastFullScan = now;
-                full = true;
-                u64 addr = 0;
-                for (int guard = 0; guard < 4096 && exact < n; guard++) {
-                    MemoryInfo mi{};
-                    u32 page = 0;
-                    if (R_FAILED(svcQueryMemory(&mi, &page, addr))) break;
-                    if ((mi.perm & Perm_Rw) == Perm_Rw && mi.type != MemType_CodeMutable && mi.type != MemType_Io)
-                        scan(mi.addr, mi.addr + mi.size);
-                    u64 next = mi.addr + mi.size;
-                    if (next <= addr) break;
-                    addr = next;
+                sw.pos = stop;
+                /* Every wanted enemy has a body right at its position: done. */
+                bool all = true;
+                for (int i = 0; i < n && all; i++) all = want[i]->cand && want[i]->cand_d < ExactDist * ExactDist;
+                if (all) {
+                    SweepFinish(want, n, now);
+                    return;
                 }
+                if (NowMs() - t0 >= SweepBudgetMs) return; /* the rest next frame */
             }
-            /* Two enemies standing together can both be nearest to one body:
-               the closer one gets it, the other tries again next time. */
-            int got = 0;
-            for (int i = 0; i < n; i++) {
-                want[i]->body_tried = now;
-                if (!best[i]) continue;
-                bool lost = false;
-                for (int j = 0; j < n; j++)
-                    if (j != i && best[j] == best[i] && (best_d[j] < best_d[i] || (best_d[j] == best_d[i] && j < i))) lost = true;
-                if (lost) continue;
-                Local* l = want[i];
-                const float* p = BodyPos(best[i]);
-                const float* m = reinterpret_cast<const float*>(l->actor + offsets::Actor_Mtx);
-                l->body = best[i];
-                l->off[0] = p[0] - m[3], l->off[1] = p[1] - m[7], l->off[2] = p[2] - m[11];
-                NoteRegion(best[i]);
-                got++;
-                if (best_d[i] > 0.25f * 0.25f)
-                    Logging.Log("[coop] enemies: %08x's body is offset by (%.2f, %.2f, %.2f)", l->hash, l->off[0], l->off[1], l->off[2]);
-            }
-            /* Not found is normal for some (a sleeping Stone Talus has no such
-               body): ask less often. */
-            Logging.Log("[coop] enemies: found %d of %d bodies in %lld ms%s", got, n, NowMs() - t0, full ? " (full scan)" : "");
         }
 
         bool BodyOk(const Local& l) {
@@ -400,11 +470,9 @@ namespace coop::game::enemies {
                     l.yield_until = now + YieldMs;
                     if (!BodyOk(l)) {
                         l.body = 0;
-                        s64 wait = l.tries > 3 ? 10000 : 2000; /* some never have one (see FindBodies) */
-                        if (now - l.body_tried > wait && nneed < 16) {
-                            need_body[nneed++] = &l;
-                            if (l.tries < 100) l.tries++;
-                        }
+                        /* Some never have one (see FindBodies): ask less and less often. */
+                        s64 wait = l.tries > 8 ? 30000 : l.tries > 3 ? 10000 : 2000;
+                        if (now - l.body_tried > wait && nneed < 16) need_body[nneed++] = &l;
                         continue;
                     }
                     Steer(l, r, dt);
@@ -418,9 +486,13 @@ namespace coop::game::enemies {
                 o.rot_y = std::atan2(m[2], m[10]);
             }
         }
-        if (nneed && now >= g_NextScanAt) {
-            g_NextScanAt = now + 500;
+        /* A search runs a few milliseconds a frame until it's through; the
+           next one starts half a second later at the earliest. */
+        if (nneed && (g_Sweep.active || now >= g_NextScanAt)) {
             FindBodies(need_body, nneed, now);
+            if (!g_Sweep.active) g_NextScanAt = now + 500;
+        } else if (!nneed && g_Sweep.active) {
+            g_Sweep.active = false; /* nobody left to look for */
         }
         if (send && nout) net::SendEnemyPoses(area, out, nout);
 

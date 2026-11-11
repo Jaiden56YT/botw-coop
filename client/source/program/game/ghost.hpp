@@ -21,6 +21,13 @@ namespace coop::game {
     /* The local player's current anim::Category (from its own animation system). */
     u32 LocalAnimCategory();
 
+    /* Whether actors may be created right now. Not during a loading screen:
+       creating one there stalls the load for good (fast travel with a partner
+       connected never finished). The game's clock stands still while it
+       loads, so: only once the clock has run for 1.5 s, and not within 3 s of
+       the game removing one of our actors (how a load starts). Game thread. */
+    bool SafeToSpawn(s64 now_ms);
+
     /* Plays one of the local player's own body sequences ("Dead", "Wait"). Game thread. */
     bool PlayLocalAS(const char* name);
     /* While on, the game's own body sequences for the local player are dropped,

@@ -16,6 +16,13 @@ namespace coop::net {
         float offset[12]; /* 3x4 row-major, bone space */
     };
 
+    /* A stamp a player placed on their own map (game::map shares them). */
+    constexpr int MaxSharedStamps = 40;
+    struct SharedStamp {
+        u8 icon;
+        float pos[3];
+    };
+
     struct Peer {
         bool present;
         u8 id;
@@ -58,6 +65,9 @@ namespace coop::net {
     /* Tells the room we went down and were revived. Any thread. */
     void SendRevived();
 
+    /* game::map: the stamps on our own map (replaces the last list sent). */
+    void SendStamps(const SharedStamp* stamps, int count);
+
     /* game::revive: I'm down (1), back up (0) or out of time (2), at `pos`. */
     void SendDowned(u8 state, const float* pos, u8 seconds_left);
 
@@ -68,7 +78,13 @@ namespace coop::net {
     void SendWeapons(const WeaponPose* poses, int count);
 
     /* Gives a weapon to player `to`. Any thread. */
-    void SendGift(u8 to, const char* weapon);
+    /* A traded weapon's bonus and durability (game::pouch::WeaponInfo on the wire). */
+    struct GiftBonus {
+        u32 flags;
+        s32 value;
+        s32 durability;
+    };
+    void SendGift(u8 to, const char* weapon, const GiftBonus* bonus = nullptr);
 
     /* Sends a line to the server log. Dropped if the queue is full. Any thread. */
     void SendLog(const char* fmt, ...) __attribute__((format(printf, 1, 2)));

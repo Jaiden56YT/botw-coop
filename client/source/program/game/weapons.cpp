@@ -12,6 +12,7 @@
 #include "ghost.hpp"
 #include "notify.hpp"
 #include "offsets.hpp"
+#include "pouch.hpp"
 #include "player.hpp"
 
 namespace coop::game::weapons {
@@ -149,8 +150,13 @@ namespace coop::game::weapons {
                     if (!p.present || !p.has_state || p.state.map_area != area) continue;
                     float dx = m[3] - p.state.pos[0], dy = m[7] - p.state.pos[1], dz = m[11] - p.state.pos[2];
                     if (dx * dx + dz * dz > 3.0f * 3.0f || dy * dy > 4.0f * 4.0f) continue;
-                    net::SendGift(p.id, l.name);
-                    Logging.Log("[coop] weapons: gave %s to %s", l.name, p.name);
+                    /* Its bonus and wear, as they were in the inventory it left. */
+                    pouch::WeaponInfo info{};
+                    bool known = pouch::TakeRemoved(l.name, now, &info);
+                    net::GiftBonus bonus{info.flags, info.value, info.durability};
+                    net::SendGift(p.id, l.name, known ? &bonus : nullptr);
+                    Logging.Log("[coop] weapons: gave %s to %s (bonus flags %x, value %d, durability %d%s)", l.name, p.name, info.flags,
+                                info.value, info.durability, known ? "" : ": not known");
                     notify::Gift(false, p.name, l.name);
                     /* Ours is gone: it's theirs now. (Moving it away isn't enough:
                        its physics puts it back.) Never hand the same actor over twice. */
@@ -167,6 +173,7 @@ namespace coop::game::weapons {
         constexpr int MaxIncoming = 32;
         char g_Incoming[MaxIncoming][32];
         char g_IncomingFrom[MaxIncoming][32];
+        pouch::WeaponInfo g_IncomingInfo[MaxIncoming]; /* flags 0 and durability 0 = plain */
         int g_IncomingCount = 0;
         nn::os::MutexType g_GiftMutex;
         bool g_GiftMutexReady = false;
@@ -176,6 +183,7 @@ namespace coop::game::weapons {
         int g_SentCount = 0;
         s64 g_NextScan = 0, g_LastSend = 0;
         s64 g_InWorldSince = 0;
+        int g_FewerScans = 0;
 
         void ScanLocal(s64 now) {
             if (now < g_NextScan) return;
@@ -236,6 +244,21 @@ namespace coop::game::weapons {
                 }
                 if (best < 0) continue;
                 const char* wname = Read<const char*>(found[i] + offsets::BaseProc_NameStr);
+                /* Stay on the bone it was on last time unless another is clearly
+                   closer. A bow on Link's back sits between Pod_A and Spine_2,
+                   and an idle animation flipped it between them about once a
+                   second, with a new message (and a re-bind on every partner's
+                   puppet) each time. */
+                for (int k = 0; k < g_SentCount; k++) {
+                    if (std::strcmp(g_Sent[k].name, wname) != 0) continue;
+                    for (int b = 0; b < NumBones; b++) {
+                        if (!have[b] || std::strcmp(Bones[b], g_Sent[k].bone) != 0) continue;
+                        float dx = m[3] - bones[b][3], dy = m[7] - bones[b][7], dz = m[11] - bones[b][11];
+                        float d = dx * dx + dy * dy + dz * dz;
+                        if (d < 0.35f * 0.35f && best_d > d * 0.25f) best = b, best_d = d; /* under half the distance to switch */
+                    }
+                    break;
+                }
                 if (best_d > 0.35f * 0.35f) {
                     /* Loose. Ours if we carried this weapon a moment ago. */
                     bool was_ours = false;
@@ -252,6 +275,13 @@ namespace coop::game::weapons {
             }
 
             CheckGifts(now, found, nfound, carried, ncarried);
+
+            /* Fewer weapons than last time has to hold for three scans (0.75 s)
+               before it counts: now and then a scan finds none on a bone (the
+               bone matrices aren't there for a moment), and sending that made
+               every partner take the weapons off the puppet and make them again. */
+            if (n < g_SentCount && ++g_FewerScans < 3) return;
+            g_FewerScans = 0;
 
             /* Send when a weapon changed, moved to another bone, or every 3 s. */
             bool changed = n != g_SentCount;
@@ -327,12 +357,14 @@ namespace coop::game::weapons {
         }
     }
 
-    void OnGift(const char* from, const char* weapon) {
+    void OnGift(const char* from, const char* weapon, const net::GiftBonus* bonus) {
         if (!g_GiftMutexReady) return;
         nn::os::LockMutex(&g_GiftMutex);
         if (g_IncomingCount < MaxIncoming) {
             std::strncpy(g_Incoming[g_IncomingCount], weapon, 31);
             std::strncpy(g_IncomingFrom[g_IncomingCount], from, 31);
+            g_IncomingInfo[g_IncomingCount] = bonus ? pouch::WeaponInfo{bonus->flags, bonus->value, bonus->durability}
+                                                    : pouch::WeaponInfo{0, 0, 0};
             g_IncomingCount++;
         }
         nn::os::UnlockMutex(&g_GiftMutex);
@@ -364,25 +396,48 @@ namespace coop::game::weapons {
         /* A partner gave us something: it lands a step ahead of us, a few per
            tick (a dropped stack arrives as one gift per item). */
         float me[3], rot = 0;
-        if (g_GiftMutexReady && g_IncomingCount > 0 && GetLocalPlayer(me, &rot)) {
+        /* Gifts wait while actors can't be created (a loading screen, a menu). */
+        if (g_GiftMutexReady && g_IncomingCount > 0 && SafeToSpawn(now) && GetLocalPlayer(me, &rot)) {
             constexpr int PerTick = 4;
             char gifts[PerTick][32], from[PerTick][32];
+            pouch::WeaponInfo info[PerTick];
             nn::os::LockMutex(&g_GiftMutex);
             int n = g_IncomingCount < PerTick ? g_IncomingCount : PerTick;
             std::memcpy(gifts, g_Incoming, n * 32);
             std::memcpy(from, g_IncomingFrom, n * 32);
+            std::memcpy(info, g_IncomingInfo, n * sizeof(pouch::WeaponInfo));
             std::memmove(g_Incoming, g_Incoming + n, (g_IncomingCount - n) * 32);
             std::memmove(g_IncomingFrom, g_IncomingFrom + n, (g_IncomingCount - n) * 32);
+            std::memmove(g_IncomingInfo, g_IncomingInfo + n, (g_IncomingCount - n) * sizeof(pouch::WeaponInfo));
             g_IncomingCount -= n;
             nn::os::UnlockMutex(&g_GiftMutex);
             for (int i = 0; i < n; i++) {
+                bool told = false;
+                /* A weapon with a bonus goes straight into the inventory: only
+                   an inventory item can carry the bonus (one lying on the
+                   ground would be picked up plain). No room there: it lands
+                   at your feet like any other, without the bonus. */
+                if (info[i].flags && info[i].durability > 0) {
+                    char what[40], shown[64];
+                    pouch::Describe(info[i], what, sizeof(what));
+                    if (!notify::DisplayName(gifts[i], shown, sizeof(shown))) std::snprintf(shown, sizeof(shown), "%.31s", gifts[i]);
+                    if (pouch::Give(gifts[i], info[i])) {
+                        Logging.Log("[coop] gifts: %s gave you %s with %s (flags %x, value %d, durability %d), now in your inventory",
+                                    from[i], gifts[i], what, info[i].flags, info[i].value, info[i].durability);
+                        notify::Show("%s gave you %s (%s)", from[i], shown, what);
+                        continue;
+                    }
+                    Logging.Log("[coop] gifts: no room in the inventory for %s; it lands at your feet without its bonus", gifts[i]);
+                    notify::Show("%s gave you %s, but there's no room: it's at your feet, without its %s", from[i], shown, what);
+                    told = true;
+                }
                 /* Spread around the spot ahead so a stack doesn't land in one pile. */
                 float ang = rot + 0.35f * static_cast<float>((g_ReceivedHead % 5) - 2);
                 float at[3] = {me[0] + std::sin(ang) * 1.5f, me[1] + 0.5f, me[2] + std::cos(ang) * 1.5f};
                 uintptr_t a = SpawnActor(gifts[i], at, rot);
                 g_Received[g_ReceivedHead++ % 16] = a;
                 Logging.Log("[coop] gifts: %s gave you %s%s", from[i], gifts[i], a ? "" : " (couldn't spawn it)");
-                if (a) notify::Gift(true, from[i], gifts[i]);
+                if (a && !told) notify::Gift(true, from[i], gifts[i]);
             }
         }
         if (g_TestActor) Update(g_TestBind, g_TestActor);

@@ -61,6 +61,8 @@ namespace coop::game::progress {
         bool g_Fresh = true;
         char g_GateFlag[64] = "IsGet_PlayerStole2"; /* the paraglider: the tutorial is over */
         char g_BeastPrefix[64] = "Clear_Remains";
+        constexpr u8 FromRewind = 0xfe; /* not from a partner: our own knowledge, after a reload undid it */
+        s64 g_NextRewindCheck = 0;
         u8 g_Held[MaxFlags];
         int g_HeldCount = 0;
         bool g_BeastsAnywhere = false;
@@ -309,6 +311,33 @@ namespace coop::game::progress {
         }
         if (!g_InWorld.load()) EnterWorld();
 
+        /* A game over reloads the last save: everything shared since then
+           (ours or a partner's) is undone in this world, while the partners
+           still have it. Shared progress only ever grows, so put it back,
+           rewards included (the reload took those out of the pouch too). */
+        s64 now_ms = nn::os::ConvertToTimeSpan(nn::os::GetSystemTick()).GetMilliSeconds();
+        if (now_ms >= g_NextRewindCheck) {
+            g_NextRewindCheck = now_ms + 5000;
+            /* Only while playing with someone: alone, loading an older save
+               on purpose should give you that save as it was. */
+            net::Peer rp[net::MaxPeers];
+            net::GetPeers(rp);
+            bool with_partner = false;
+            for (auto& q : rp) with_partner |= q.present;
+            int undone = 0;
+            for (int i = 0; i < g_NameCount; i++) {
+                if (!g_Known[i].load() || IsSet(static_cast<u16>(i))) continue;
+                g_Known[i].store(0);
+                if (!with_partner) continue;
+                Queue(static_cast<u16>(i), true, FromRewind);
+                undone++;
+            }
+            if (undone) {
+                Logging.Log("[coop] progress: %d shared flags were undone (a reload); putting them back", undone);
+                notify::Show("Shared progress restored after the reload");
+            }
+        }
+
         /* Apply flags other players set. */
         Pending batch[64];
         int n = 0;
@@ -356,7 +385,8 @@ namespace coop::game::progress {
                whoever freed it. Its clear flag alone, without the region's
                quest flags, leaves a world where the beast is "freed" but its
                story never happened. */
-            if (!g_BeastsAnywhere && std::strncmp(g_Names[name], g_BeastPrefix, std::strlen(g_BeastPrefix)) == 0) {
+            if (!g_BeastsAnywhere && batch[i].from != FromRewind &&
+                std::strncmp(g_Names[name], g_BeastPrefix, std::strlen(g_BeastPrefix)) == 0) {
                 bool together = false;
                 const char* who = "A partner";
                 for (auto& p : peers) {

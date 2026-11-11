@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"sync"
 	"time"
@@ -21,7 +22,7 @@ const (
 	MaxPlayersPerRoom = 4
 	readTimeout       = 15 * time.Second // clients ping every 2 s
 	handshakeTimeout  = 5 * time.Second
-	sendQueueSize     = 256
+	sendQueueSize     = 4096 // a joiner is sent well over a thousand progress flags at once
 )
 
 const MsgHostChanged MsgType = 12 // S->C: u8 new host id
@@ -39,12 +40,23 @@ type Room struct {
 	players  map[uint8]*Client
 }
 
+// Test settings (-lag, -jitter): messages wait this long in the relay, in
+// order, the way a slow connection would hold them.
+var testLag, testJitter time.Duration
+
+type delayed struct {
+	data     []byte
+	at       time.Time
+	reliable bool
+}
+
 type Client struct {
-	conn net.Conn
-	id   uint8
-	name string
-	room *Room
-	send chan []byte
+	delay chan delayed // only with -lag/-jitter
+	conn  net.Conn
+	id    uint8
+	name  string
+	room  *Room
+	send  chan []byte
 
 	mu     sync.Mutex // guards closed and sends on send
 	closed bool
@@ -56,13 +68,19 @@ func NewServer() *Server {
 
 func main() {
 	listen := flag.String("listen", ":7777", "address to listen on")
+	flag.DurationVar(&testLag, "lag", 0, "testing: hold every message this long before passing it on (e.g. 80ms), to play as if over the internet")
+	flag.DurationVar(&testJitter, "jitter", 0, "testing: plus a random extra up to this long")
 	flag.Parse()
+	if testLag > 0 || testJitter > 0 {
+		log.Printf("TESTING: every message is held %v (+ up to %v) before it is passed on", testLag, testJitter)
+	}
 
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("botw-coop relay listening on %s (protocol %d)", ln.Addr(), ProtocolVersion)
+	printAddresses(ln.Addr())
 	NewServer().Serve(ln)
 }
 
@@ -96,6 +114,10 @@ func (s *Server) handle(conn net.Conn) {
 	}
 
 	c := &Client{conn: conn, name: hello.Name, send: make(chan []byte, sendQueueSize)}
+	if testLag > 0 || testJitter > 0 {
+		c.delay = make(chan delayed, 4*sendQueueSize)
+		go c.delayLoop()
+	}
 	if reason := s.join(c, hello); reason != "" {
 		s.logf("%s (%s) rejected: %s", conn.RemoteAddr(), hello.Name, reason)
 		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
@@ -250,12 +272,42 @@ func (c *Client) queue(data []byte, reliable bool) {
 	if c.closed {
 		return
 	}
+	if c.delay != nil {
+		at := time.Now().Add(testLag)
+		if testJitter > 0 {
+			at = at.Add(time.Duration(rand.Int63n(int64(testJitter))))
+		}
+		select {
+		case c.delay <- delayed{data, at, reliable}:
+		default:
+			if reliable {
+				c.closeLocked()
+			}
+		}
+		return
+	}
+	c.deliverLocked(data, reliable)
+}
+
+func (c *Client) deliverLocked(data []byte, reliable bool) {
 	select {
 	case c.send <- data:
 	default:
 		if reliable {
 			c.closeLocked()
 		}
+	}
+}
+
+// delayLoop passes held messages on when their time comes, in order.
+func (c *Client) delayLoop() {
+	for d := range c.delay {
+		time.Sleep(time.Until(d.at))
+		c.mu.Lock()
+		if !c.closed {
+			c.deliverLocked(d.data, d.reliable)
+		}
+		c.mu.Unlock()
 	}
 }
 
@@ -292,6 +344,9 @@ func (c *Client) closeLocked() {
 		return
 	}
 	c.closed = true
+	if c.delay != nil {
+		close(c.delay)
+	}
 	close(c.send)
 	c.conn.Close()
 }
@@ -308,4 +363,33 @@ func putU64(v uint64) []byte {
 	b := make([]byte, 8)
 	binary.LittleEndian.PutUint64(b, v)
 	return b
+}
+
+// printAddresses lists what players put in config.ini as `server`.
+func printAddresses(listen net.Addr) {
+	port := 7777
+	if ta, ok := listen.(*net.TCPAddr); ok {
+		port = ta.Port
+	}
+	log.Printf("Players put one of these in config.ini (port = %d):", port)
+	log.Printf("  server = 127.0.0.1        for a game on this computer")
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return
+	}
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok || ipn.IP.IsLoopback() || ipn.IP.To4() == nil || ipn.IP.IsLinkLocalUnicast() {
+			continue
+		}
+		ip := ipn.IP.To4()
+		what := "for players on the same Wi-Fi or network (a Switch at home, too)"
+		if ip[0] == 100 && ip[1] >= 64 && ip[1] <= 127 {
+			what = "for friends on your Tailscale network"
+		} else if ip[0] == 25 || ip[0] == 26 {
+			what = "for friends on your Hamachi or Radmin network"
+		}
+		log.Printf("  server = %-16s %s", ip.String(), what)
+	}
+	log.Printf("Keep this window open while you play.")
 }

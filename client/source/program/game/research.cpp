@@ -18,12 +18,12 @@ namespace coop::game::research {
         struct Region {
             uintptr_t start, end;
         };
-        Region g_Regions[1024];
+        Region g_Regions[8192];
         int g_RegionCount = 0;
         void LoadRegions() {
             g_RegionCount = 0;
             u64 addr = 0;
-            while (g_RegionCount < 1024) {
+            while (g_RegionCount < 8192) {
                 MemoryInfo mi{};
                 u32 page = 0;
                 if (R_FAILED(svcQueryMemory(&mi, &page, addr))) break;
@@ -216,6 +216,39 @@ namespace coop::game::research {
         }
     }
 
+    namespace {
+        /* Mode 3: the pouch. Walks PauseMenuDataMgr's item list as the 1.5.0
+           decomp lays it out and logs each item. */
+        void PouchDump() {
+            LoadRegions();
+            uintptr_t slot = Read<uintptr_t>(Base() + offsets::Got_PauseMenuDataMgrInstance);
+            uintptr_t mgr = slot ? Read<uintptr_t>(slot) : 0;
+            Logging.Log("[coop] research: pouch manager %p", reinterpret_cast<void*>(mgr));
+            Logging.Log("[coop] research: %d readable regions; manager readable: %d", g_RegionCount, Readable(mgr, 0x100));
+            if (!mgr || !Readable(mgr, 0x100)) return;
+            for (uintptr_t off = 0x28; off <= 0xa0; off += 8)
+                Logging.Log("[coop] research: mgr+%#lx = %#lx", off, Read<uintptr_t>(mgr + off));
+            for (uintptr_t list = 0x68; list <= 0x80; list += 0x18) {
+                uintptr_t head = mgr + list;
+                s32 count = Read<s32>(head + 0x10), node_off = Read<s32>(head + 0x14);
+                Logging.Log("[coop] research: list at +%#lx: count %d, node offset %d", list, count, node_off);
+                if (count < 0 || count > 420 || node_off < 0 || node_off > 0x40) continue;
+                int i = 0;
+                for (uintptr_t node = Read<uintptr_t>(head + 8); node != head && node && i < 60; i++) {
+                    if (!Readable(node, 0x100)) break;
+                    uintptr_t it = node - node_off;
+                    node = Read<uintptr_t>(node + 8);
+                    const char* name = Read<const char*>(it + 0x30);
+                    if (!Readable(reinterpret_cast<uintptr_t>(name) & ~7ul, 8)) name = "?";
+                    Logging.Log("[coop] research: item %p type %d use %d value %d eq %d inv %d %s data %08x %08x %08x %08x %08x",
+                                reinterpret_cast<void*>(it), Read<s32>(it + 0x18), Read<s32>(it + 0x1c), Read<s32>(it + 0x20),
+                                Read<u8>(it + 0x24), Read<u8>(it + 0x25), name, Read<u32>(it + 0x80), Read<u32>(it + 0x84),
+                                Read<u32>(it + 0x88), Read<u32>(it + 0x8c), Read<u32>(it + 0x90));
+                }
+            }
+        }
+    }
+
     void SetTest(int mode) { g_Mode = mode; }
 
     void Tick(s64 now) {
@@ -226,6 +259,11 @@ namespace coop::game::research {
         if (now < g_At) return;
         if (g_Mode == 2) {
             EnemyTest(now, me);
+            return;
+        }
+        if (g_Mode == 3) {
+            g_Done = true;
+            PouchDump();
             return;
         }
         g_Done = true;

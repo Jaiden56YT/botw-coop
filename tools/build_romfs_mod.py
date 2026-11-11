@@ -338,7 +338,7 @@ def write_sync_flags(bootup_pack: Path, out_file: Path) -> int:
             if rx.match(n):
                 names.add(n)
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    out_file.write_text("\n".join(sorted(names)) + "\n")
+    out_file.write_text("\n".join(sorted(names)) + "\n", newline="\n")
     return len(names)
 
 
@@ -424,7 +424,7 @@ def main():
                                                         "boundingForTraverse"])})
         gear_map = out / "botw-coop" / "gear-map.txt"
         gear_map.parent.mkdir(parents=True, exist_ok=True)
-        gear_map.write_text("".join(f"{a} {m}\n" for a, m in sorted(mapping)))
+        gear_map.write_text("".join(f"{a} {m}\n" for a, m in sorted(mapping)), newline="\n")
         print(f"gear: {len(models)} gear actors for {len(mapping)} armor pieces")
 
     # Weapons on the puppet: one actor per weapon model, showing just that
@@ -457,7 +457,7 @@ def main():
                                   "info_from": (weapon, ["bfres", "mainModel", "aabbMin", "aabbMax",
                                                          "boundingForTraverse"])})
         weapon_map = out / "botw-coop" / "weapon-map.txt"
-        weapon_map.write_text("".join(f"{w} {m}\n" for w, m in sorted(wmapping)))
+        weapon_map.write_text("".join(f"{w} {m}\n" for w, m in sorted(wmapping)), newline="\n")
         print(f"weapons: {len(wmodels)} weapon actors for {len(wmapping)} weapons")
 
     info_bin = oead.byml.to_binary(info, big_endian=False, version=byml_version)

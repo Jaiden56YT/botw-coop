@@ -13,6 +13,7 @@
 #include "game/notify.hpp"
 #include "game/enemies.hpp"
 #include "game/meals.hpp"
+#include "game/map.hpp"
 #include "game/saves.hpp"
 
 namespace {
@@ -51,6 +52,7 @@ namespace {
         coop::game::combat::Init();
         coop::game::enemies::Init();
         coop::game::meals::Init();
+        coop::game::map::Init();
         coop::game::revive::Install();
         coop::game::notify::Install();
         coop::game::weapons::Init();

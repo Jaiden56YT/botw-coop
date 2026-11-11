@@ -24,12 +24,16 @@ namespace coop::game::items {
         constexpr s64 ScanMs = 200;
         constexpr s64 DropWindowMs = 3000; /* a drop shows up this soon after the menu closes */
         constexpr float NearLink = 2.5f;   /* ...and this close to Link */
+        constexpr float NearLinkWeapon = 4.0f;
         constexpr float GiveRange = 3.0f;  /* settled this close to a partner = theirs */
 
         /* Items that can be dropped from the inventory. Dishes and elixirs
            can't (and would lose their effects), arrows can't either. */
         bool Droppable(const char* name) {
             if (std::strncmp(name, "Item_Cook_", 10) == 0) return false;
+            /* Not a thing you carry: it turned up beside Link on its own and was
+               taken for a drop (seen once, after the game had been frozen). */
+            if (std::strcmp(name, "Item_Conductor") == 0) return false;
             return std::strncmp(name, "Item_", 5) == 0 || std::strncmp(name, "Animal_Insect_", 14) == 0 ||
                    std::strcmp(name, "BeeHome") == 0 || std::strcmp(name, "Obj_FireWoodBundle") == 0;
         }
@@ -170,8 +174,11 @@ namespace coop::game::items {
                     if (InPrev(found[i]) || weapons::IsGiftActor(found[i])) continue;
                     const float* m = reinterpret_cast<const float*>(found[i] + offsets::Actor_Mtx);
                     float dx = m[3] - me[0], dz = m[11] - me[2];
-                    if (dx * dx + dz * dz > NearLink * NearLink) continue;
-                    if (std::strncmp(names[i], "Weapon_", 7) == 0) {
+                    bool weapon = std::strncmp(names[i], "Weapon_", 7) == 0;
+                    /* A long weapon lands farther out (a claymore: 2.7 m). */
+                    float near = weapon ? NearLinkWeapon : NearLink;
+                    if (dx * dx + dz * dz > near * near) continue;
+                    if (weapon) {
                         weapons::TrackDropped(found[i], names[i], now);
                     } else {
                         Track(found[i], names[i], now);
@@ -255,6 +262,8 @@ namespace coop::game::items {
         (void)time;
         g_OurWrite.store(true);
     }
+
+    s64 LastPausedMs() { return g_PausedAt; }
 
     bool InMenu(s64 now) { return now - g_PausedAt < 500; }
 

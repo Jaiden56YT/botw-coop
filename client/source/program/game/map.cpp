@@ -61,6 +61,26 @@ namespace coop::game::map {
             return (bits & TagMask) == TagBits;
         }
 
+        /* Stamps shown for a partner's own map stamps: same idea, another tag,
+           any icon. They're never sent on (so they can't echo back). */
+        constexpr u32 SharedTagBits = 0xB;
+        float TagShared(float v) {
+            u32 bits;
+            std::memcpy(&bits, &v, 4);
+            bits = (bits & ~TagMask) | SharedTagBits;
+            std::memcpy(&v, &bits, 4);
+            return v;
+        }
+        bool IsTaggedShared(float v) {
+            u32 bits;
+            std::memcpy(&bits, &v, 4);
+            return (bits & TagMask) == SharedTagBits;
+        }
+        bool IsShared(uintptr_t s) {
+            const float* p = Pos(s);
+            return Active(s) && IsTaggedShared(p[0]) && IsTaggedShared(p[1]) && IsTaggedShared(p[2]);
+        }
+
         bool IsOurs(uintptr_t s) {
             const float* p = Pos(s);
             return Active(s) && Icon(s) == PartnerIcon && IsTagged(p[0]) && IsTagged(p[1]) && IsTagged(p[2]);
@@ -100,6 +120,113 @@ namespace coop::game::map {
                 }
             }
             return 0;
+        }
+
+        /* ---- shared stamps ---- */
+        constexpr int MaxShare = net::MaxSharedStamps;
+        constexpr s32 FreeForPlayer = 10; /* pool slots always left for your own stamps */
+        nn::os::MutexType g_ShareMutex;
+        bool g_ShareMutexReady = false;
+        struct PeerStamps {
+            bool used;
+            u8 id;
+            int count;
+            net::SharedStamp list[MaxShare];
+        };
+        PeerStamps g_PeerStamps[net::MaxPeers]; /* what each partner has on their map (network thread writes) */
+        net::SharedStamp g_SentStamps[MaxShare];
+        int g_SentStampCount = -1;
+        s64 g_StampsSentAt = 0;
+
+        uintptr_t AddShared(uintptr_t mgr, s32 icon, const float (&pos)[3]) {
+            reinterpret_cast<void (*)(uintptr_t, s32, const float*, bool)>(Base() + offsets::MapMgr_AddStamp)(mgr, icon, pos, false);
+            const PtrArray& pool = Pool(mgr);
+            for (s32 i = 0; i < pool.num; i++) {
+                uintptr_t s = pool.ptrs[i];
+                if (s && IsShared(s) && Icon(s) == icon && std::memcmp(Pos(s), pos, sizeof(pos)) == 0) {
+                    auto set_visible = reinterpret_cast<void (*)(uintptr_t, bool)>(Base() + offsets::MapStamp_SetVisible);
+                    set_visible(s, false);
+                    set_visible(s, true);
+                    return s;
+                }
+            }
+            return 0;
+        }
+
+        /* Your own stamps go to your partners; theirs are shown on your map. */
+        void ShareStamps(uintptr_t mgr, const PtrArray& pool, const net::Peer* peers, s64 now) {
+            /* Mine: every active stamp that isn't one of the mod's. */
+            net::SharedStamp mine[MaxShare] = {};
+            int n = 0, used = 0;
+            for (s32 i = 0; i < pool.num; i++) {
+                uintptr_t s = pool.ptrs[i];
+                if (!s || !Active(s)) continue;
+                used++;
+                if (IsOurs(s) || IsShared(s) || n >= MaxShare) continue;
+                s32 icon = Icon(s);
+                if (icon < 27 || icon > 41) continue;
+                mine[n].icon = static_cast<u8>(icon);
+                std::memcpy(mine[n].pos, Pos(s), sizeof(mine[n].pos));
+                n++;
+            }
+            bool changed = n != g_SentStampCount || std::memcmp(mine, g_SentStamps, n * sizeof(mine[0])) != 0;
+            bool anyone = false;
+            for (int p = 0; p < net::MaxPeers; p++) anyone |= peers[p].present;
+            if (anyone && (changed || now - g_StampsSentAt > 10000)) { /* again every 10 s, for late joiners */
+                std::memset(g_SentStamps, 0, sizeof(g_SentStamps));
+                std::memcpy(g_SentStamps, mine, n * sizeof(mine[0]));
+                if (changed) Logging.Log("[coop] map: sharing %d of your stamps", n);
+                g_SentStampCount = n;
+                g_StampsSentAt = now;
+                net::SendStamps(mine, n);
+            }
+
+            /* Theirs: what should be on my map now. */
+            net::SharedStamp want[net::MaxPeers * MaxShare];
+            int nwant = 0;
+            if (g_ShareMutexReady) {
+                nn::os::LockMutex(&g_ShareMutex);
+                for (auto& ps : g_PeerStamps) {
+                    if (!ps.used) continue;
+                    bool here = false;
+                    for (int p = 0; p < net::MaxPeers; p++) here |= peers[p].present && peers[p].id == ps.id;
+                    if (!here) {
+                        ps.used = false; /* they left: their stamps go */
+                        continue;
+                    }
+                    for (int k = 0; k < ps.count; k++) {
+                        net::SharedStamp w = ps.list[k];
+                        for (float& f : w.pos) f = TagShared(f);
+                        want[nwant++] = w;
+                    }
+                }
+                nn::os::UnlockMutex(&g_ShareMutex);
+            }
+            /* Remove shared stamps nobody has any more; note which wanted ones exist. */
+            bool have[net::MaxPeers * MaxShare] = {};
+            int removed = 0, added = 0;
+            for (s32 i = 0; i < pool.num; i++) {
+                uintptr_t s = pool.ptrs[i];
+                if (!s || !IsShared(s)) continue;
+                bool wanted = false;
+                for (int k = 0; k < nwant && !wanted; k++) {
+                    if (have[k] || Icon(s) != want[k].icon || std::memcmp(Pos(s), want[k].pos, sizeof(want[k].pos)) != 0) continue;
+                    have[k] = wanted = true;
+                }
+                if (!wanted) {
+                    Remove(s);
+                    removed++;
+                    used--;
+                }
+            }
+            for (int k = 0; k < nwant; k++) {
+                if (have[k] || used + FreeForPlayer >= pool.num) continue;
+                if (AddShared(mgr, want[k].icon, want[k].pos)) {
+                    added++;
+                    used++;
+                }
+            }
+            if (added || removed) Logging.Log("[coop] map: partners' stamps: %d added, %d removed", added, removed);
         }
 
         uintptr_t g_Stamp[net::MaxPeers];
@@ -151,7 +278,7 @@ namespace coop::game::map {
             for (s32 i = 0; i < pool->num; i++) {
                 uintptr_t s = pool->ptrs[i];
                 if (!s || !Active(s)) continue;
-                if (IsOurs(s)) {
+                if (IsOurs(s) || IsShared(s)) {
                     Remove(s);
                     removed++;
                 } else {
@@ -197,5 +324,31 @@ namespace coop::game::map {
             Logging.Log("[coop] map: marker for %s", peer.name);
             if (progress::TestMenu() && g_OpenMapAt == 0) g_OpenMapAt = now + 15000;
         }
+        ShareStamps(mgr, *pool, peers, now);
+    }
+
+    void Init() {
+        if (!g_ShareMutexReady) {
+            nn::os::InitializeMutex(&g_ShareMutex, false, 0);
+            g_ShareMutexReady = true;
+        }
+    }
+
+    void OnRemoteStamps(u8 from, const net::SharedStamp* stamps, int count) {
+        if (!g_ShareMutexReady) return;
+        if (count > MaxShare) count = MaxShare;
+        nn::os::LockMutex(&g_ShareMutex);
+        PeerStamps* slot = nullptr;
+        for (auto& ps : g_PeerStamps)
+            if (ps.used && ps.id == from) slot = &ps;
+        for (auto& ps : g_PeerStamps)
+            if (!slot && !ps.used) slot = &ps;
+        if (slot) {
+            slot->used = true;
+            slot->id = from;
+            slot->count = count;
+            std::memcpy(slot->list, stamps, count * sizeof(stamps[0]));
+        }
+        nn::os::UnlockMutex(&g_ShareMutex);
     }
 }

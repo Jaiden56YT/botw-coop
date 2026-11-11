@@ -28,7 +28,8 @@ namespace coop::game::weapons {
     void Init();
 
     /* Network thread: a partner gave us a weapon or item (they dropped or threw it near us). */
-    void OnGift(const char* from, const char* weapon);
+    /* `bonus` (may be null): the weapon's bonus and durability in the giver's inventory. */
+    void OnGift(const char* from, const char* weapon, const net::GiftBonus* bonus = nullptr);
 
     /* Something of ours (a weapon dropped from the inventory) is lying near us:
        give it to a partner if it ends up next to one. Game thread. */

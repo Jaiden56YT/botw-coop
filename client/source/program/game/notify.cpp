@@ -8,7 +8,9 @@
 #include <lib.hpp>
 #include <nn/os.hpp>
 
+#include "items.hpp"
 #include "offsets.hpp"
+#include "player.hpp"
 
 namespace coop::game::notify {
 
@@ -147,6 +149,10 @@ namespace coop::game::notify {
     void Tick(s64 now) {
         if (g_Gift.count && now - g_Gift.last > 1500) FlushGift();
         if (now < g_NextAt) return;
+        /* Only where a banner can be seen: Link in the world, and no menu or
+           loading screen for the last 1.5 s (messages wait in the queue). */
+        float me[3];
+        if (!GetLocalPlayerPos(me) || now - items::LastPausedMs() < 1500) return;
         char msg[MaxText];
         Lock();
         bool have = g_Head != g_Tail;

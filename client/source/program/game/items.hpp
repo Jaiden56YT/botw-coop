@@ -21,6 +21,10 @@ namespace coop::game::items {
        not the clock running. */
     void NoteClockWrite(float time);
 
+    /* When the game's clock last stood still (a menu or a loading screen), in
+       our milliseconds; very negative if never. */
+    s64 LastPausedMs();
+
     /* The pause menu is open (the game's clock has stood still for 1.2 s or more). */
     bool InMenu(s64 now_ms);
 

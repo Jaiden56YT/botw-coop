@@ -29,7 +29,8 @@ RYU_PATH="$P2" "$ROOT/tools/deploy-ryujinx.sh" >/dev/null
 
 # A test copy: keep it silent so it doesn't play over your game.
 if [ -z "${P2_SOUND:-}" ] && [ -f "$P2/Config.json" ]; then
-    sed -i '' -E 's/"audio_volume": *[0-9.]+/"audio_volume": 0/' "$P2/Config.json"
+    # Volume 0, and no audio output at all (the status bar has shown 100% with volume 0).
+    sed -i '' -E -e 's/"audio_volume": *[0-9.]+/"audio_volume": 0/' -e 's/"audio_backend": *"[A-Za-z0-9]+"/"audio_backend": "Dummy"/' "$P2/Config.json"
 fi
 
 SAVE_ROOT="$P2/bis/user/save/0000000000000005"

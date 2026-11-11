@@ -185,6 +185,17 @@ Logged with `test_move` (which presses the buttons) and the `ASList_StartAnimati
 - The Great Plateau shrines hand out the runes (`IsGet_Obj_Magnetglove`, `IsGet_Obj_RemoteBomb*`, `IsGet_Obj_StopTimer`, `IsGet_Obj_IceMaker`), and the Old Man's quest follows their clear flags. `IsGet_PlayerStole2` (the paraglider) marks the end of that tutorial; no partner progress is applied before it.
 - Not guarded: `Clear_Dungeon120`-`136` (The Champions' Ballad shrines) are shared like any shrine, so a step of that quest can complete from a partner's clear.
 
+### Horse coats
+
+- Real horses can be spawned in Tabantha with `createActor` (`GameRomHorse05`, `GameRomHorse12` and `GameRomHorseEpona` all appeared; one kicked Link over).
+- `GameRomHorse01`-`23`, `GameRomHorseEpona` and `GameRomHorseZelda` have byte-identical model lists (`EngineRom_Horse_Link`, no `VariationMatAnim`), the same `Horse_Link` ASList, and parameter lists that differ only in stats (life, gear charges, `ASVariation`, `RiddenAnimalType`). Own models: `GameRomHorse00L` (giant), `00S` (donkey), `Bone` (Stalhorse), `Nushi` (Lord of the Mountain).
+- `Horse_Link.sbfres` has material animations `Horse_Link_Collar_Docile_fsp`/`_ftp`, `_Touchy_fsp`/`_ftp`, `_Epona_fsp`, `_Zelda_fsp`. On spawn the game starts `Collar_Shader_Impatient` (both normal horses tried) or `Collar_Shader_EponaHorse` on the horse's ASList, slot 0, bank 4, and `Collar_Impatient` / `Collar_EponaHorse` on a second list (the mane). The floats passed are -1, -1: the frame, which is the coat, is set some other way. `Horse_CollarType` (string at `0x15cc0a4`) is the likely source.
+
+### Weapon bonuses
+
+- InstParamPack value types: 3 int, 4 Vec3, 5 string (the decomp's enum order).
+- `SharpWeaponAddType` and `SharpWeaponAddValue` are referenced only by two AI-action parameter loaders (`0x646924`, `0x650f68`). Where a weapon actor keeps its bonus wasn't found.
+
 ### Blood Moon
 
 - `TimeMgr` adds to `WM_BloodyMoonTimer` (f32); past 7 days it sets `WM_BloodyDay`, and on a bloody day the Blood Moon rises at midnight. Both are program-writable game data. Guests copy the host's values once a second.
@@ -240,6 +251,34 @@ Logged with `test_move` (which presses the buttons) and the `ASList_StartAnimati
 ### Controls the mod takes
 
 - Clicking the right stick opens the Scope, and D-pad Down whistles (calling the horse, with its own banner), so neither works as a co-op button. The mod keeps the left stick click from the game while it's held: released within 350 ms, it's passed on as a tap (Link crouches); held longer, it's the mod's.
+
+### Loading screens with a partner connected
+
+- **Never create an actor during a loading screen.** This was known for the first load; it's just as true for fast travel and shrines. The game removes the mod's actors when a load starts, and the mod used to make the puppet again at once: the load then never finished (136 respawns in 45 s, with one game and a fake partner). Until this was found, nobody had fast-traveled with a partner connected.
+- The signal: the game's clock (`WM_Time`) stands still for the whole load. Actors are only created once the clock has run for 1.5 s, and not within 3 s of the game removing one of ours (which is how a load starts, before the clock stop is noticed). Gifts wait the same way.
+- **What's attached to the puppet dies with it.** Armor, weapon and horse actors are removed by the same load, and their pointers were kept and written to every frame. One run crashed inside `startAnimationMaybe` on a freed armor actor (`PC main+0x149f250`, called from the mod). They're now forgotten with the body, and checked against the live actor list every frame.
+- Armor and weapons are only kept on a puppet within 120 m (160 m to take them off): nobody can see them farther away, and the fewer actors that have to survive far from Link, the better.
+- A second Ryujinx on the same Mac did not hang fast-travel or shrine loads; that quirk seems to be about the first load only.
+- With two real games: player 2 fast-traveled 648 m (Vah Medoh's travel point), player 1 saw the banner, warped over in 3 hops and arrived 2 m away; player 2 walked into Dunba Taag Shrine (`CDungeon / Dungeon055`) with a partner connected.
+
+### Enemy life before an enemy wakes
+
+- Many placed enemies read life 1 with a max of 48 to 864 until they become active (72 of them around the Tabantha camps). Life going from that 1 up to the real value is not a heal, and "less than max" doesn't mean hurt: only an enemy whose life has been seen to go down is treated as hurt.
+
+### Game over and reload
+
+- With `tryRevive` returning false the game shows Game Over; Continue reloads the last save in place. The game removes the mod's actors as in any load. The flag tables' reset counter (`Manager+0xc28`) does not change on this reload, so it isn't seen as a new save: the mod has to compare what it believes is set against the game to notice the rewind.
+
+### Carried weapons: two sources of churn
+
+- A bow on Link's back sits about as close to `Spine_2` as to `Pod_A`. An idle animation flipped the nearest bone about once a second; each flip sent a new message and re-bound the weapon on every partner's puppet. A weapon now stays on its last bone unless another is under half the distance.
+- Now and then a scan finds no weapon on any bone (the bone matrices aren't there for a moment), and during a warp's hops the weapons trail Link. Sending "no weapons" made partners take everything off the puppet and spawn it again; fewer weapons than last time now has to hold for 0.75 s.
+- `Item_Conductor` is an actor that can appear beside Link by itself; it isn't something carried, and is ignored by the trading code.
+
+### The map screen, for test scripts
+
+- Minus needs a 300 ms press to open the map. The cursor starts on Link; the left stick moves it and it snaps to icons. From the Tabantha test spot, 220 ms left lands on Vah Medoh's travel point and 150 ms down on Dunba Taag Shrine. A, then A on "Travel", travels.
+- After traveling to a shrine, Link stands on the pad facing the camera with the shrine behind him: stick up for 1.6 s walks him in, and the lift takes him down without a prompt.
 
 ### Module pitfalls
 
@@ -327,3 +366,27 @@ Animation-slot layouts (keys are stored as hashes: `NumASSlot` = 1749500541, `Is
 | Ryujinx reports `EAGAIN` as 11 (Linux numbering). | 11 and 35 (BSD) are both accepted. |
 | **A second Nextendo instance hangs on BotW's loading screen while the first is running**, with or without mods. It stops right after the game's load-time play report and never creates Link. Every load started while the other instance was paused finished in about 20 s. Pausing after the hang doesn't recover it; the load has to start while the other instance is paused. Turning off Discord integration didn't help on its own. | Pause the other instance while a save loads. Only affects two games on one machine. |
 | Two instances can share a machine with `--root-data-dir`. A copied data folder needs Nextendo's `nextendo_patchnote_version` too, or launch stops at a "what's new" popup. | Documented in README. |
+
+
+## Running on a real console (not run yet)
+
+What differs from Ryujinx, found by reading files rather than by running:
+
+- **Permissions (`main.npdm`).** exlaunch's hooks patch the game's code through `svcMapProcessMemory` and get their own process handle with `svcCreateSession`/`svcReplyAndReceive`. A retail game's npdm doesn't allow those calls (BotW 1.9.0 allows 50 system calls, none above 0x5f); Ryujinx doesn't enforce the list, a console does. `client/config.json` builds an npdm for the mod. It used to carry exlaunch's sample title id and lacked five services the 1.9.0 game asks for (`ectx:aw`, `mnpp:app`, `ngc:u`, `ngct:u`, `notif:a`) and one flag (`disable_device_address_space_merge`: the game's flags byte is 0x27). It now matches the game's file in title id, services, flags, stack size and thread limits, and adds the system calls. Ryujinx loads it when it's in the mod's `exefs` ("main.npdm replaced") and the game runs; it also turns on SD card access there, which the game's own npdm refuses (0x320002).
+- **Save data.** The save's header (`ExtraData0` in Ryujinx's save folder) gives a data size of 65,011,712 bytes and a journal of 1,572,864 bytes. Everything written between two `CommitSaveData` calls has to fit the journal on a console. A save slot's `game_data.sav` is 1,027,264 bytes, the biggest file there is. `saves.cpp` commits before the next file would take the running total past 1 MB.
+- **Speed.** A full pass over memory for rigid bodies took 170 ms on an M4. `enemies.cpp` now searches 3 ms per frame and resumes.
+- **Log.** `svcOutputDebugString` goes nowhere a player can see. `filelog.cpp` keeps the last 64 KB of log lines and, with `log_file = true`, the network thread appends them to `sd:/botw-coop/log.txt` every 2 s (`MountSdCardForDebug`, which needs the npdm above).
+
+
+## The inventory (pouch)
+
+`PauseMenuDataMgr` (instance through the GOT slot in `offsets.hpp`) is laid out as in the 1.5.0 decomp. Checked by walking it at runtime (`test_research = 3`) on a 100% save: 320 items, names and bonuses matching the inventory screen.
+
+- `+0x28` a `sead::CriticalSection` (its mutex at `+0x48` read `0x101`).
+- `+0x68` the item list (`sead::OffsetList`: node `{prev, next}`, `s32 count`, `s32 node offset` = 8); `+0x80` a second list (free items).
+- `+0x98` the 420 items themselves, `0x298` bytes each. The list's nodes always point into this array.
+- An item: `+0x08` list node, `+0x18` type (0 sword, 1 bow, 2 arrow, 3 shield), `+0x20` value (durability x100 for weapons, count for stacks), `+0x24` equipped, `+0x30` name pointer (to its own buffer at `+0x3c`), `+0x80` bonus value, `+0x88` bonus flags.
+- Bonus flags are the game's `WeaponModifier` bits: 1 Attack Up, 2 Durability Up, 4 Critical Hit, 8 Long Throw, 0x10 Multi-Shot (value = arrows), 0x20 Zoom, 0x40 Quick Shot, 0x80 Shield Surf Up, 0x100 Shield Guard Up; `0x80000000` marks the stronger (yellow) kind. Seen: Savage Lynel Crusher `0x80000001` / 44, Royal Claymore `0x80000002` / 16, a bow `0x80000010` / 5, a shield `0x80000100` / 20.
+- `itemGet(mgr, name, value, modifier*)`: for a weapon `value` is the durability, and `modifier` is `{u32 flags; s32 value}`. The list count going up says it went in; it doesn't when the inventory is full.
+- A weapon dropped from the menu stays in the list with value 0 until the menu closes, then leaves it.
+- In the menu, a dropped two-handed weapon lands 2.7 m from Link.

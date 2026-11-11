@@ -63,6 +63,7 @@ namespace coop::game::revive {
         int g_TestLife = 0;       /* test: drop to this life, then let a real hit bring Link down */
         s64 g_TestLifeAt = 0;
         bool g_TestSkipGame = false;
+        bool g_TestGameOver = false; /* test_life = -1: the next lethal hit is a game over */
         s64 g_TestAt = 0;
     }
 
@@ -75,6 +76,10 @@ namespace coop::game::revive {
             if (g_Down.load()) {
                 if (life) *life = DownLife;
                 return true;
+            }
+            if (g_TestGameOver) { /* test: one plain game over, no revive of any kind */
+                g_TestGameOver = false;
+                return false;
             }
             /* A fairy or Mipha's Grace first (the test skips them to reach ours). */
             if (!g_TestSkipGame && Orig(player)) return true;
@@ -242,14 +247,20 @@ namespace coop::game::revive {
 
         /* Test: a real lethal hit. Low life, and fairies/Mipha's Grace skipped,
            so the next hit that would end the game reaches our revive. */
-        if (g_TestLife > 0 && here && g_TestLifeAt == 0) g_TestLifeAt = now + 8000;
+        if (g_TestLife != 0 && here && g_TestLifeAt == 0) g_TestLifeAt = now + 8000;
         if (g_TestLifeAt > 0 && now > g_TestLifeAt) {
             g_TestLifeAt = -1;
             uintptr_t link = LinkActor();
             if (s32* life = link ? LifeOf(link) : nullptr) {
-                Logging.Log("[coop] revive test: life %d -> %d; the next lethal hit skips fairies", *life, g_TestLife);
-                *life = g_TestLife;
-                g_TestSkipGame = true;
+                if (g_TestLife < 0) {
+                    Logging.Log("[coop] revive test: life %d -> 1; the next lethal hit is a game over", *life);
+                    *life = 1;
+                    g_TestGameOver = true;
+                } else {
+                    Logging.Log("[coop] revive test: life %d -> %d; the next lethal hit skips fairies", *life, g_TestLife);
+                    *life = g_TestLife;
+                    g_TestSkipGame = true;
+                }
             }
         }
 

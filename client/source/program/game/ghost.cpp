@@ -9,6 +9,7 @@
 
 #include "../net/client.hpp"
 #include "offsets.hpp"
+#include "pouch.hpp"
 #include "player.hpp"
 #include "world.hpp"
 #include "progress.hpp"
@@ -95,7 +96,10 @@ namespace coop::game {
             uintptr_t horse;
             const char* horse_anim;
             bool horse_shown;
+            bool attach_near;     /* close enough to the local player to wear and carry things */
         };
+
+        constexpr float AttachNear = 120.0f, AttachFar = 160.0f;
 
         constexpr u8 EchoId = 255;
         constexpr int MaxGhosts = net::MaxPeers + 1;
@@ -155,7 +159,10 @@ namespace coop::game {
             return found;
         }
 
+        s64 g_NoSpawnUntil = 0;
+
         uintptr_t SpawnNamed(const char* name, const float (&pos)[3], float rot_y, const char* model_user = nullptr) {
+            if (!SafeToSpawn(NowMs())) return 0;
             uintptr_t creator = ActorCreator();
             uintptr_t heap_slot = Read<uintptr_t>(Base() + offsets::Got_SpawnHeapOwner);
             uintptr_t heap_owner = heap_slot ? Read<uintptr_t>(heap_slot) : 0;
@@ -314,6 +321,71 @@ namespace coop::game {
             g.gear_anim[s] = nullptr;
         }
 
+        /* The puppet's body is gone (the game removes our actors on a load:
+           fast travel, a shrine, a reload): so is everything attached to it.
+           Their pointers must not be used again; they're made anew. */
+        void ForgetAttachments(Ghost& g) {
+            for (int s = 0; s < 3; s++) {
+                g.gear[s] = 0;
+                g.gear_name[s][0] = '\0';
+                g.gear_anim[s] = nullptr;
+            }
+            for (auto& p : g.parked) p = 0;
+            for (int i = 0; i < net::MaxWeapons; i++) {
+                g.weapon[i] = 0;
+                g.weapon_actor[i][0] = '\0';
+                g.weapon_pose[i].bone[0] = '\0';
+                g.weapon_bind[i].made = false;
+            }
+            g.horse = 0;
+            g.horse_anim = nullptr;
+            g.horse_shown = false;
+        }
+
+        /* One pass over the live actors: any attached actor the game has
+           removed on its own is forgotten (and made again where it's still
+           wanted). False if the list was busy: leave the attachments alone
+           this frame. */
+        bool CheckAttachments(Ghost& g) {
+            uintptr_t creator = ActorCreator();
+            if (!creator) return false;
+            uintptr_t* ptrs[3 + 6 + net::MaxWeapons + 1];
+            int n = 0;
+            for (int s = 0; s < 3; s++) if (g.gear[s]) ptrs[n++] = &g.gear[s];
+            for (auto& p : g.parked) if (p) ptrs[n++] = &p;
+            for (int i = 0; i < net::MaxWeapons; i++) if (g.weapon[i]) ptrs[n++] = &g.weapon[i];
+            if (g.horse) ptrs[n++] = &g.horse;
+            if (n == 0) return true;
+            bool seen[3 + 6 + net::MaxWeapons + 1] = {};
+            uintptr_t cs = creator + offsets::ActorCreator_ActorListCS;
+            if (!reinterpret_cast<CsTryFn>(Base() + offsets::CriticalSection_TryLock)(cs)) return false;
+            uintptr_t head = creator + offsets::ActorCreator_ActorList;
+            s32 node_off = Read<s32>(creator + offsets::ActorCreator_ActorListOffset);
+            int guard = 0;
+            for (uintptr_t node = Read<uintptr_t>(head + 8); node != head && node != 0 && guard < 20000; guard++) {
+                uintptr_t a = node - node_off;
+                for (int i = 0; i < n; i++) seen[i] |= *ptrs[i] == a;
+                node = Read<uintptr_t>(node + 8);
+            }
+            reinterpret_cast<CsFn>(Base() + offsets::CriticalSection_Unlock)(cs);
+            bool lost = false;
+            for (int i = 0; i < n; i++)
+                if (!seen[i]) {
+                    *ptrs[i] = 0;
+                    lost = true;
+                }
+            if (lost) {
+                Logging.Log("[coop] player %d: the game removed something attached to the puppet; it's made again", g.peer_id);
+                /* Names off, so what's still wanted is spawned again. */
+                for (int s = 0; s < 3; s++)
+                    if (!g.gear[s]) g.gear_name[s][0] = '\0', g.gear_anim[s] = nullptr;
+                for (int i = 0; i < net::MaxWeapons; i++)
+                    if (!g.weapon[i]) g.weapon_actor[i][0] = '\0', g.weapon_bind[i].made = false;
+                if (!g.horse) g.horse_anim = nullptr, g.horse_shown = false;
+            }
+            return true;
+        }
+
         /* Puts on / takes off gear pieces to match want_gear, then moves them with the body. */
         void DriveGear(Ghost& g, s64 now) {
             for (int s = 0; s < 3; s++) {
@@ -369,6 +441,7 @@ namespace coop::game {
                 }
                 const net::WeaponPose& p = g.want_weapons[i];
                 if (std::strcmp(actor_name, g.weapon_actor[i]) != 0) {
+                    if (g.weapon_actor[i][0]) Logging.Log("[coop] player %d: slot %d was %s", g.peer_id, i, g.weapon_actor[i]);
                     ParkWeapon(g, i);
                     g.weapon[i] = SpawnNamed(actor_name, g.shown, g.shown_rot);
                     std::memcpy(g.weapon_actor[i], actor_name, sizeof(actor_name));
@@ -470,12 +543,15 @@ namespace coop::game {
                 bool alive = IsActorAlive(creator, g.actor, &known);
                 if (!known) return; /* list busy this frame; try again next frame */
                 if (!alive) {
-                    Logging.Log("[coop] ghost for player %d was removed by the game; respawning", g.peer_id);
+                    Logging.Log("[coop] ghost for player %d was removed by the game (a load?); respawning when it's safe",
+                                g.peer_id);
                     g.actor = 0;
+                    ForgetAttachments(g);
+                    g_NoSpawnUntil = now + 3000;
                 }
             }
             if (!g.actor) {
-                if (now < g.retry_after_ms) return;
+                if (now < g.retry_after_ms || !SafeToSpawn(now)) return;
                 g.actor = Spawn(target, target_rot);
                 g.spawned_ms = now;
                 if (!g.actor) {
@@ -528,9 +604,34 @@ namespace coop::game {
             Place(g.actor, g.shown, g.shown_rot);
             std::memcpy(g.written, g.shown, sizeof(g.written));
             Animate(g, before, now, category);
-            DriveGear(g, now);
-            DriveWeapons(g);
-            DriveHorse(g, category);
+            /* Armor, weapons and a horse are only kept on a puppet that's
+               within sight. The game removes weapon actors far from Link on
+               its own (seen at 648 m: every few seconds, however they're
+               flagged), and nobody can see them from there anyway. */
+            float me[3];
+            bool near = false;
+            if (GetLocalPlayerPos(me)) {
+                float nx = g.shown[0] - me[0], nz = g.shown[2] - me[2];
+                float limit = g.attach_near ? AttachFar : AttachNear;
+                near = nx * nx + nz * nz < limit * limit;
+            }
+            if (CheckAttachments(g)) {
+                if (near) {
+                    DriveGear(g, now);
+                    DriveWeapons(g);
+                    DriveHorse(g, category);
+                } else if (g.attach_near) {
+                    /* Out of sight: put everything away (it's put back on when they're near again). */
+                    for (int s2 = 0; s2 < 3; s2++) {
+                        ParkGear(g, s2);
+                        g.gear_name[s2][0] = '\0';
+                        g.gear_anim[s2] = nullptr;
+                    }
+                    for (int i = 0; i < net::MaxWeapons; i++) ParkWeapon(g, i);
+                    DriveHorse(g, 0);
+                }
+                g.attach_near = near;
+            }
         }
 
         bool LocalPlayer(uintptr_t* actor_out, float (&pos)[3], float* rot) {
@@ -551,8 +652,12 @@ namespace coop::game {
 
             /* A new player actor means a stage load: every actor we spawned is gone. */
             if (player_actor != g_LastPlayerActor) {
-                for (auto& g : g_Ghosts) g.actor = 0;
+                for (auto& g : g_Ghosts) {
+                    g.actor = 0;
+                    ForgetAttachments(g);
+                }
                 g_LastPlayerActor = player_actor;
+                g_NoSpawnUntil = NowMs() + 3000;
             }
             if (!have_me) return;
 
@@ -584,7 +689,7 @@ namespace coop::game {
                 }
             }
 
-            if (g_Settings.test_spawn[0] && g_TestSpawnedFor != player_actor) {
+            if (g_Settings.test_spawn[0] && g_TestSpawnedFor != player_actor && SafeToSpawn(NowMs())) {
                 g_TestSpawnedFor = player_actor;
                 SpawnTestRow(me, my_rot);
             }
@@ -698,6 +803,8 @@ namespace coop::game {
 
     uintptr_t SpawnActor(const char* name, const float (&pos)[3], float rot_y) { return SpawnNamed(name, pos, rot_y); }
 
+    bool SafeToSpawn(s64 now) { return now >= g_NoSpawnUntil && now - items::LastPausedMs() > 1500; }
+
     /* Sees every animation sequence the game starts. Used to learn which
        sequence the local player is in (debug logging for now). */
     namespace {
@@ -782,6 +889,7 @@ namespace coop::game {
                 combat::Tick(NowMs());
                 revive::Tick(NowMs());
                 gear::Tick(NowMs());
+                pouch::Tick(NowMs());
                 weapons::Tick(NowMs());
                 items::Tick(NowMs());
                 warp::Tick(NowMs());
