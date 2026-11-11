@@ -83,6 +83,8 @@ namespace coop::game {
             char gear_name[3][64];
             uintptr_t gear[3];
             const char* gear_anim[3];
+            int gear_resync_left;  /* times left to start the body and all pieces together again */
+            s64 gear_resync_at;
             uintptr_t parked[6];   /* gear taken off, kept out of sight for reuse */
             char parked_name[6][64];
             /* Carried weapons: CoopWeapon_<model> actors bound to the puppet's bones. */
@@ -95,6 +97,8 @@ namespace coop::game {
             /* A horse under them while they ride. */
             uintptr_t horse;
             const char* horse_anim;
+            int horse_retries;
+            s64 horse_retry_at;
             bool horse_shown;
             bool attach_near;     /* close enough to the local player to wear and carry things */
         };
@@ -288,6 +292,7 @@ namespace coop::game {
                 PlayAS(g.actor, want, 0);
                 g.anim_fails++;
                 g.anim_retry_at = now + 1000;
+                for (auto& piece_anim : g.gear_anim) piece_anim = nullptr; /* the pieces start again with it */
             }
         }
 
@@ -406,16 +411,43 @@ namespace coop::game {
                 if (!g.gear[s]) g.gear[s] = SpawnNamed(g.want_gear[s], g.shown, g.shown_rot);
                 if (g.gear[s]) {
                     std::memcpy(g.gear_name[s], g.want_gear[s], sizeof(g.gear_name[s]));
+                    g.gear_resync_left = 2;
+                    g.gear_resync_at = now + 600;
                     Logging.Log("[coop] player %d puts on %s", g.peer_id, g.gear_name[s]);
                 } else {
                     /* Unknown or failed: don't retry every frame. */
                     std::memcpy(g.gear_name[s], g.want_gear[s], sizeof(g.gear_name[s]));
                 }
             }
+            /* The body and each piece are separate models playing the same
+               sequence, and they only look like one Link while they play it
+               in step. So whenever a piece has to start the body's sequence
+               (it was just put on, or the body changed to another one),
+               everything starts it together from the top.
+               The start call's result says nothing (see Animate), and this
+               used to wait for a "yes": for 'Run' it never came, so a piece
+               was asked again on every frame and stayed on the first frames
+               of the stride while the bare body ran on underneath. Seen on a
+               Switch as two Links, a dressed one and a bare one, running at
+               different times. */
+            bool together = false;
+            for (int s = 0; s < 3; s++)
+                if (g.gear[s] && g.gear_anim[s] != g.anim) together = true;
+            /* A piece that was only just made can ignore the call: ask again
+               a little later, all of them and the body, so they stay in step. */
+            if (g.gear_resync_left > 0 && now >= g.gear_resync_at) {
+                g.gear_resync_left--;
+                g.gear_resync_at = now + 1000;
+                together = true;
+            }
+            if (together && g.anim) PlayAS(g.actor, g.anim, 0);
             for (int s = 0; s < 3; s++) {
                 if (!g.gear[s]) continue;
                 Place(g.gear[s], g.shown, g.shown_rot);
-                if (g.anim && g.gear_anim[s] != g.anim && PlayAS(g.gear[s], g.anim, 0)) g.gear_anim[s] = g.anim;
+                if (together && g.anim) {
+                    PlayAS(g.gear[s], g.anim, 0);
+                    g.gear_anim[s] = g.anim;
+                }
             }
         }
 
@@ -490,6 +522,8 @@ namespace coop::game {
                 g.horse = SpawnNamed("CoopHorse", at, g.shown_rot);
                 g.horse_anim = nullptr;
                 if (!g.horse) return;
+                g.horse_retries = 2; /* just made, it can ignore the first request */
+                g.horse_retry_at = NowMs() + 700;
                 Logging.Log("[coop] player %d is riding: horse %p", g.peer_id, reinterpret_cast<void*>(g.horse));
             }
             g.horse_shown = true;
@@ -497,7 +531,15 @@ namespace coop::game {
             /* Gait from the rider's speed (m/s). */
             const char* want = g.speed < 0.5f ? "Wait" : g.speed < 3.0f ? "Move_Gear1" : g.speed < 7.0f ? "Move_Gear2"
                              : g.speed < 12.0f ? "Move_Gear3" : "Move_Gear4";
-            if (want != g.horse_anim && PlayAS(g.horse, want, 0)) g.horse_anim = want;
+            /* Started once per change; the call's result says nothing (see DriveGear). */
+            if (want != g.horse_anim) {
+                PlayAS(g.horse, want, 0);
+                g.horse_anim = want;
+            } else if (g.horse_retries > 0 && NowMs() >= g.horse_retry_at) {
+                g.horse_retries--;
+                g.horse_retry_at = NowMs() + 1000;
+                PlayAS(g.horse, want, 0);
+            }
         }
 
         /* Debug: while the local Link rides, log where he is relative to his

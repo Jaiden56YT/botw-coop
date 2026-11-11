@@ -27,7 +27,14 @@ namespace coop::game::warp {
         constexpr s64 GestureMs = 1500;
         constexpr s64 CooldownMs = 5000;
         constexpr s64 StaleMs = 3000;  /* a partner we haven't heard from this long isn't a target */
-        constexpr float Behind = 2.0f; /* land this far behind the partner */
+        /* Where a warp lands: on the partner's own spot, a little above
+           their feet. That's the one place known to be free. It used to be
+           2 m behind them at +0.5 m, which is inside the hillside on any
+           slope over 14 degrees and inside the wall when they stand with
+           their back to one: two test players following each other on a
+           slope both ended up under the ground. Puppets don't collide with
+           Link, so standing in the same place is harmless. */
+        constexpr float LandAbove = 0.5f;
 
         /* The world only streams in around Link if he moves at most ~1.5 km
            at once: after 4 km the game keeps him frozen with the loading
@@ -106,15 +113,16 @@ namespace coop::game::warp {
         }
 
         /* The partner we're warping to, if still around and in our area. */
-        bool TargetSpot(float (&out)[3]) {
+        bool TargetSpot(float (&out)[3], bool* steady = nullptr) {
             net::Peer peers[net::MaxPeers];
             net::GetPeers(peers);
             for (auto& p : peers) {
                 if (!p.present || p.id != g_TargetId || !p.has_state || p.state.map_area != LocalArea()) continue;
-                float r = p.state.rot_y;
-                out[0] = p.state.pos[0] - std::sin(r) * Behind;
-                out[1] = p.state.pos[1] + 0.5f;
-                out[2] = p.state.pos[2] - std::cos(r) * Behind;
+                out[0] = p.state.pos[0];
+                out[1] = p.state.pos[1] + LandAbove;
+                out[2] = p.state.pos[2];
+                /* Not rising or dropping: standing, walking, swimming. */
+                if (steady) *steady = std::fabs(p.state.vel[1]) < 1.0f;
                 return true;
             }
             return false;
@@ -136,10 +144,42 @@ namespace coop::game::warp {
 
         bool g_Announce = true; /* say "Warped to X" (not for the revive's respawn) */
 
+        /* After landing: where he was put, and until when to keep an eye on him. */
+        float g_Land[3];
+        s64 g_LandUntil = 0;
+        int g_LandTries = 0;
+
         void Finish(bool ok) {
             g_Active = false;
             g_GuardUntil = NowMsLocal() + 3000;
+            if (ok) {
+                std::memcpy(g_Land, g_Hop, sizeof(g_Land));
+                g_LandUntil = NowMsLocal() + 5000;
+                g_LandTries = 0;
+            }
             if (ok && g_Announce) notify::Show("Warped to %s", g_TargetName);
+        }
+
+        /* He dropped well below where he was put while the partner stayed up
+           there: the ground wasn't solid yet (it loads a moment after the
+           scenery). Put him back on the partner's spot, a few times at most. */
+        void WatchLanding(s64 now) {
+            if (g_Active || now > g_LandUntil) return;
+            float me[3];
+            if (!GetLocalPlayerPos(me) || me[1] > g_Land[1] - 4.0f) return;
+            float to[3];
+            bool steady = false;
+            if (g_LandTries >= 3 || !TargetSpot(to, &steady) || !steady || to[1] < g_Land[1] - 2.0f) {
+                g_LandUntil = 0; /* they went down too (a cliff, a glide), or left: it's a real fall */
+                return;
+            }
+            g_LandTries++;
+            Logging.Log("[coop] warp: fell %.1f m below the landing spot; back to %s (try %d)", g_Land[1] - me[1], g_TargetName,
+                        g_LandTries);
+            if (!Place(to)) return;
+            std::memcpy(g_Land, to, sizeof(g_Land));
+            g_LandUntil = now + 5000;
+            g_GuardUntil = now + 3000;
         }
 
         void Step(s64 now) {
@@ -332,6 +372,7 @@ namespace coop::game::warp {
             Step(now);
         }
         GuardLife(now);
+        WatchLanding(now);
         FollowTest(now);
 
         s64 held = StickClickHeldMs();

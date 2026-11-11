@@ -74,7 +74,7 @@ With the mod installed, the game plays from a **separate copy** of your saves.
 
 | Do this | And this happens |
 |---|---|
-| **Hold the left stick click for 1.5 seconds** | You warp to your partner and land just behind them. A quick tap still crouches. With several partners, each warp goes to the next one. |
+| **Hold the left stick click for 1.5 seconds** | You warp to your partner and land on the spot where they stand. A quick tap still crouches. With several partners, each warp goes to the next one. |
 | **Drop or throw a weapon, bow or shield next to your partner** | It leaves your world and lands at their feet. One with a bonus (Attack Up and so on) goes straight into their inventory, bonus and durability included; if their inventory is full it lands at their feet without the bonus. |
 | **Inventory → pick a material or food → Hold → close the menu → put it down (A) next to your partner** | They get it. A held stack goes over one item at a time. |
 | **Eat while standing next to your partner** | They're healed by the same amount. |
