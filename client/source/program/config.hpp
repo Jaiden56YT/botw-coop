@@ -24,6 +24,7 @@ namespace coop {
         bool beasts_anywhere; /* share Divine Beast clears with partners who weren't inside with you */
         char test_gate[64];   /* debug: flag that stands in for "has the paraglider" (progress is held until it's set) */
         int test_heal;        /* debug: once a partner is near, drop to this life (quarter hearts) to test shared meals */
+        int test_follow;      /* debug: warp to the nearest partner whenever they're more than this many metres away */
         int test_research;    /* debug: run a reverse-engineering search (research.cpp) */
         int test_life;        /* debug: drop to this life near a partner and let a real hit test the revive */
     };

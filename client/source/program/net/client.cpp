@@ -19,6 +19,7 @@
 #include "../game/revive.hpp"
 #include "../game/weapons.hpp"
 #include "../game/items.hpp"
+#include "../game/warp.hpp"
 #include "../game/notify.hpp"
 #include "../game/research.hpp"
 #include "../game/meals.hpp"
@@ -773,7 +774,9 @@ namespace coop::net {
                 game::revive::SetTest(g_Config.test_revive);
                 game::revive::SetTestLife(g_Config.test_life);
                 game::research::SetTest(g_Config.test_research);
+                game::items::SetProbeDebug(g_Config.test_research == 5);
                 game::meals::SetTestLife(g_Config.test_heal);
+                game::warp::SetTestFollow(g_Config.test_follow);
                 game::weapons::SetTest(g_Config.test_bind);
                 game::items::SetTest(g_Config.test_drop);
                 game::SetKeyScript(g_Config.test_keys);

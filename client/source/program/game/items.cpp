@@ -38,17 +38,39 @@ namespace coop::game::items {
                    std::strcmp(name, "BeeHome") == 0 || std::strcmp(name, "Obj_FireWoodBundle") == 0;
         }
 
-        /* The pause menu stops the clock (WM_Time); our ticks keep running.
+        /* The pause menu stops the world, and with it the clock (WM_Time); our
+           ticks keep running. A clock that stands still isn't always the menu,
+           though: the game pins it in play too (a new game until Link has
+           left the Shrine of Resurrection, 11:00 until the first tower is
+           activated, a forced hour in some places). So when the clock stops
+           we nudge it by a hair. A running world writes its own value back
+           over ours within a frame (TimeMgr::calc_ reads the flag, applies
+           its rules and writes it back); a paused one leaves ours alone.
+           While an event runs (talking, a cutscene) the game keeps whatever
+           it reads, so those count as paused too.
            The clock also stands still for a moment now and then in play, so
-           only a stop of MenuMinMs or more counts as the menu. */
+           only a stop of MenuMinMs or more counts. */
         constexpr s64 MenuMinMs = 1200;
+        constexpr s64 ProbeEveryMs = 300;
+        constexpr s64 ProbeStillMs = 150;   /* the clock hasn't moved for this long (it only moves once a frame) */
+        constexpr s64 ProbeSettleMs = 350;  /* a write shows up in what we read within this (a frame, measured), if nothing overwrites it */
+        constexpr float ProbeStep = 0.002f; /* half a second of game time */
         gdt::Handle g_TimeH = gdt::InvalidHandle;
         s64 g_HandleAt = 0;
         float g_LastTime = -1;
-        s64 g_TimeMovedAt = 0;
+        s64 g_TimeMovedAt = 0;    /* last moment the world was seen running */
         s64 g_PausedAt = -100000; /* last moment we were in the menu */
         std::atomic<bool> g_OurWrite{false};
-        s64 g_IgnoreUntil = 0;
+        float g_SyncValue = 0;
+        /* The nudge: we wrote g_ProbeValue over g_ProbeOld at g_ProbeAt. */
+        bool g_Probing = false;
+        bool g_ProbeSeen = false; /* our value has shown up in what we read */
+        float g_ProbeValue = 0, g_ProbeOld = 0;
+        s64 g_ProbeAt = 0;
+        s64 g_NextProbe = 0;
+        s64 g_StillSince = 0;
+        bool g_ProbeDebug = false; /* test_research = 5: log what the clock reads after each nudge */
+        int g_ProbeLogLeft = 0;
 
         void WatchPause(s64 now) {
             if (!gdt::Ready()) return;
@@ -58,17 +80,59 @@ namespace coop::game::items {
             }
             float t;
             if (!gdt::GetF32(g_TimeH, &t)) return;
-            /* Our own time sync moved it (and the game may settle the new time
-               over a few frames); its clock may still be stopped. */
-            if (g_OurWrite.exchange(false)) g_IgnoreUntil = now + 700;
-            if (now < g_IgnoreUntil) g_LastTime = t;
-            if (t == g_LastTime) {
+            if (g_ProbeLogLeft > 0) {
+                g_ProbeLogLeft--;
+                Logging.Log("[coop] probe: read %.5f, %lld ms after", t, now - g_ProbeAt);
+            }
+            /* Our own time sync just wrote the clock: that write tells us the
+               same as a nudge does. */
+            bool synced = g_OurWrite.exchange(false);
+            if (synced) {
+                g_ProbeOld = t; /* what it reads now: the old time, or already ours */
+                g_ProbeValue = g_SyncValue;
+                g_ProbeAt = now;
+                g_ProbeSeen = false;
+                g_Probing = true;
+            }
+            if (t != g_LastTime && !g_Probing) g_StillSince = now;
+            bool ran = false;
+            if (synced) {
+                /* wait for the next reads */
+            } else if (g_Probing) {
+                if (t == g_ProbeValue) {
+                    g_ProbeSeen = true; /* still ours: nothing is writing the clock */
+                } else if (g_ProbeSeen || t != g_ProbeOld || now - g_ProbeAt > ProbeSettleMs) {
+                    /* Ours was there and is gone, or the clock moved on, or
+                       ours never showed: the world wrote over it. */
+                    ran = true;
+                    g_Probing = false;
+                    g_StillSince = now;
+                }
+            } else if (t != g_LastTime) {
+                ran = true;
+            } else if (now - g_StillSince >= ProbeStillMs && now >= g_NextProbe) {
+                g_NextProbe = now + ProbeEveryMs;
+                if (gdt::SetF32(g_TimeH, t + ProbeStep)) {
+                    g_ProbeOld = t;
+                    g_ProbeValue = t + ProbeStep;
+                    g_ProbeAt = now;
+                    g_ProbeSeen = false;
+                    g_Probing = true;
+                    if (g_ProbeDebug) {
+                        float back = -1;
+                        gdt::GetF32(g_TimeH, &back);
+                        Logging.Log("[coop] probe: wrote %.5f over %.5f, reads back %.5f", g_ProbeValue, t, back);
+                        g_ProbeLogLeft = 8;
+                    }
+                }
+            }
+            if (!g_Probing) g_LastTime = t;
+            if (!ran) {
                 if (now - g_TimeMovedAt >= MenuMinMs) g_PausedAt = now;
                 return;
             }
             if (now - g_TimeMovedAt >= MenuMinMs && g_TimeMovedAt > 0)
                 Logging.Log("[coop] items: back from the menu (%.1f s)", (now - g_TimeMovedAt) / 1000.0f);
-            g_LastTime = t;
             g_TimeMovedAt = now;
         }
 
@@ -259,9 +323,11 @@ namespace coop::game::items {
     }
 
     void NoteClockWrite(float time) {
-        (void)time;
+        g_SyncValue = time;
         g_OurWrite.store(true);
     }
+
+    void SetProbeDebug(bool on) { g_ProbeDebug = on; }
 
     s64 LastPausedMs() { return g_PausedAt; }
 

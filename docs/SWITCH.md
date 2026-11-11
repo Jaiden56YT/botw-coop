@@ -2,7 +2,7 @@
 
 The mod runs on a modded Switch (Atmosphère) the same way it runs in Ryujinx: the same code, the same game files, in a different folder. A Switch player and a Ryujinx player can play together.
 
-**This has not been run on a real Switch yet.** Everything was built and tested in Ryujinx on a Mac (in its Hypervisor mode, which runs the game's ARM code directly). The Switch-specific parts were checked by reading and comparing, not by running: see [What's different on a Switch](#whats-different-on-a-switch). Expect the first try to need a fix or two, and follow [If it doesn't work](#if-it-doesnt-work) so the cause can be found.
+**First run on a real Switch: 2026-11-10/11.** On a new game it loaded, read its settings, connected to the relay over Wi-Fi, and showed a Ryujinx player as a second Link with the co-op banners; the Ryujinx player saw the Switch player too. Not yet tried on hardware: a large existing save (the save journal limit and the backup), trades, going down, enemy sync, and long sessions. See [What's different on a Switch](#whats-different-on-a-switch), and follow [If it doesn't work](#if-it-doesnt-work) so a cause can be found.
 
 ## What you need
 
@@ -13,7 +13,7 @@ The mod runs on a modded Switch (Atmosphère) the same way it runs in Ryujinx: t
 
 ## Before you start: back up your save
 
-On a Switch the mod keeps co-op in a separate copy of your saves inside the game's save data, just like in Ryujinx, and never writes to your normal slots. But this is the first run on real hardware. **Back up your BotW save first** with JKSV or Checkpoint. It takes a minute and makes any mistake undoable.
+On a Switch the mod keeps co-op in a separate copy of your saves inside the game's save data, just like in Ryujinx, and never writes to your normal slots. But it has only had a short run on real hardware. **Back up your BotW save first** with JKSV or Checkpoint. It takes a minute and makes any mistake undoable.
 
 ## Install
 
@@ -81,10 +81,10 @@ These are the Switch-only things, and how each was handled:
 
 | Thing | In Ryujinx | On a Switch | Status |
 |---|---|---|---|
-| Hook permissions | Not enforced. | The mod's hooks need system calls a game normally isn't allowed (`MapProcessMemory` and others). `exefs/main.npdm` grants them. | The file now matches the game's own (title id, services, flags) plus those calls; compared field by field. **Not run.** |
-| Save journal | Unlimited. | BotW's save data is 62 MB with a 1.5 MB journal: no more than that can be written between two commits. | The first copy and the backups now commit after every megabyte. Works in Ryujinx; **the limit itself can only be hit on hardware.** |
+| Hook permissions | Not enforced. | The mod's hooks need system calls a game normally isn't allowed (`MapProcessMemory` and others). `exefs/main.npdm` grants them. | The file matches the game's own (title id, services, flags) plus those calls. **Runs on a Switch.** |
+| Save journal | Unlimited. | BotW's save data is 62 MB with a 1.5 MB journal: no more than that can be written between two commits. | The first copy and the backups now commit after every megabyte. Works in Ryujinx, and on a Switch with a new game's small save; **a large save has not been tried on hardware.** |
 | Save space | Unlimited. | A full 100% save is about 16 MB, so normal saves + co-op copy + 1 backup is 48 MB of 62. | `backups = 1` on a Switch. If a backup doesn't fit it's dropped, not left half-made. |
-| Network | "Guest Internet Access". | The mod asks the system for the network and starts sockets itself (the same calls other Switch online mods use). | **Not run.** |
+| Network | "Guest Internet Access". | The mod asks the system for the network and starts sockets itself (the same calls other Switch online mods use). | **Runs on a Switch** (Wi-Fi to a relay on the same network). |
 | Speed | A Mac is several times faster. | Searching memory for an enemy's physics body took up to 170 ms on the Mac. | The search is now spread over frames, 3 ms at a time. Finding a body may take a few seconds on a Switch. |
 | Log | Ryujinx's console. | Nothing visible. | `log_file = true` writes `sd:/botw-coop/log.txt`; connection problems also show as banners. |
 | Two-game quirks | Two Ryujinx windows on one Mac can hang on loading. | Doesn't apply. | — |

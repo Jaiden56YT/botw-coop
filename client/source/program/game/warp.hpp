@@ -19,4 +19,6 @@ namespace coop::game::warp {
 
     /* Warps to this partner without a message of its own (the revive's respawn). */
     bool GoToPartner(u8 id, s64 now_ms);
+    /* Test helper (test_follow): keep warping to the nearest partner once they're this far away. */
+    void SetTestFollow(int metres);
 }

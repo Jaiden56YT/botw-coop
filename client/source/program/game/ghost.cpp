@@ -878,6 +878,7 @@ namespace coop::game {
     HOOK_DEFINE_TRAMPOLINE(GetPlayerPosHook) {
         static void* Callback(void* player_info) {
             void* result = Orig(player_info);
+            research::NoteCaller(reinterpret_cast<uintptr_t>(__builtin_return_address(0)));
             /* Many threads call this, and spawning an actor can call it again
                on the same thread. Only one tick runs at a time; nobody waits. */
             bool expected = false;

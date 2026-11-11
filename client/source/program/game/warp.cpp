@@ -302,9 +302,36 @@ namespace coop::game::warp {
         return false;
     }
 
+    namespace {
+        int g_TestFollow = 0;
+        s64 g_NextFollow = 0;
+
+        void FollowTest(s64 now) {
+            if (g_TestFollow <= 0 || g_Active || now < g_NextFollow) return;
+            g_NextFollow = now + 3000;
+            float me[3];
+            if (!GetLocalPlayerPos(me)) return;
+            net::Peer peers[net::MaxPeers];
+            net::GetPeers(peers);
+            const net::Peer* nearest = nullptr;
+            float nearest_d = 0;
+            for (auto& p : peers) {
+                if (!p.present || !p.has_state || p.state.map_area != LocalArea()) continue;
+                float dx = p.state.pos[0] - me[0], dy = p.state.pos[1] - me[1], dz = p.state.pos[2] - me[2];
+                float d = dx * dx + dy * dy + dz * dz;
+                if (!nearest || d < nearest_d) nearest = &p, nearest_d = d;
+            }
+            if (nearest && nearest_d > static_cast<float>(g_TestFollow) * g_TestFollow && GoToPartner(nearest->id, now))
+                g_NextFollow = now + 8000;
+        }
+    }
+
+    void SetTestFollow(int metres) { g_TestFollow = metres; }
+
     void Tick(s64 now) {
         if (g_Active) Step(now);
         GuardLife(now);
+        FollowTest(now);
 
         s64 held = StickClickHeldMs();
         if (held == 0) {

@@ -1,10 +1,14 @@
 #include "research.hpp"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include <lib.hpp>
 
+#include <atomic>
+
+#include "gdt.hpp"
 #include "offsets.hpp"
 #include "player.hpp"
 
@@ -249,10 +253,70 @@ namespace coop::game::research {
         }
     }
 
+    namespace {
+        /* Mode 4: callers of PlayerInfo::getPlayerPos, counted between two reports. */
+        constexpr int MaxCallers = 128;
+        std::atomic<uintptr_t> g_CallerLr[MaxCallers];
+        std::atomic<u32> g_CallerCount[MaxCallers];
+        std::atomic<u32> g_CallerOverflow{0};
+        s64 g_CensusAt = 0;
+        gdt::Handle g_CensusTime = gdt::InvalidHandle;
+
+        void Census(s64 now) {
+            if (now < g_CensusAt) return;
+            g_CensusAt = now + 2000;
+            float t = -1;
+            if (gdt::Ready()) {
+                if (g_CensusTime == gdt::InvalidHandle) g_CensusTime = gdt::F32Handle("WM_Time");
+                gdt::GetF32(g_CensusTime, &t);
+            }
+            float me[3] = {};
+            bool have = GetLocalPlayerPos(me);
+            char line[220];
+            int n = 0, used = 0, total = 0;
+            for (int i = 0; i < MaxCallers; i++) {
+                uintptr_t lr = g_CallerLr[i].load();
+                if (!lr) break;
+                used++;
+                u32 c = g_CallerCount[i].exchange(0);
+                if (!c) continue;
+                total += c;
+                n += std::snprintf(line + n, sizeof(line) - n, " %lx:%u", lr - Base(), c);
+                if (n > 180) {
+                    Logging.Log("[coop] census:%s", line);
+                    n = 0;
+                }
+            }
+            if (n) Logging.Log("[coop] census:%s", line);
+            Logging.Log("[coop] census end: clock %.4f, player %d (%.1f, %.1f, %.1f), %d callers known, %d calls, %u dropped", t, have,
+                        me[0], me[1], me[2], used, total, g_CallerOverflow.exchange(0));
+        }
+    }
+
+    void NoteCaller(uintptr_t lr) {
+        if (g_Mode != 4) return;
+        for (int i = 0; i < MaxCallers; i++) {
+            uintptr_t cur = g_CallerLr[i].load(std::memory_order_relaxed);
+            if (cur == 0) {
+                uintptr_t expected = 0;
+                cur = g_CallerLr[i].compare_exchange_strong(expected, lr) ? lr : expected;
+            }
+            if (cur == lr) {
+                g_CallerCount[i].fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+        }
+        g_CallerOverflow.fetch_add(1, std::memory_order_relaxed);
+    }
+
     void SetTest(int mode) { g_Mode = mode; }
 
     void Tick(s64 now) {
-        if (!g_Mode || g_Done) return;
+        if (g_Mode == 4) {
+            Census(now);
+            return;
+        }
+        if (!g_Mode || g_Mode == 5 || g_Done) return; /* 5 is the pause probe log, in items.cpp */
         float me[3];
         if (!GetLocalPlayerPos(me)) return;
         if (!g_At) g_At = now + 12000;

@@ -59,6 +59,8 @@ namespace coop::game {
         int g_MgrsOff = -1; /* offset of world::Manager::mMgrs, found at runtime */
         s64 g_LastWeatherLog = 0;
         s64 g_LastLocalLog = 0;
+        s64 g_LastSyncAt = 0, g_SyncBackoffUntil = 0, g_LastHeldLog = -1000000;
+        float g_LastSyncHave = 0;
 
         uintptr_t WorldMgr() {
             uintptr_t base = exl::util::GetMainModuleInfo().m_Total.m_Start;
@@ -199,11 +201,24 @@ namespace coop::game {
         /* 2.5 degrees = 10 in-game minutes. Small drift is left alone so the
            sky doesn't stutter; anything bigger snaps to the host. */
         float diff = TimeDiff(want.time, have);
-        if (std::fabs(diff) > 2.5f) {
-            gdt::SetF32(g_TimeH, want.time);
-            items::NoteClockWrite(want.time);
-            Logging.Log("[coop] world: synced time to host (%.1f -> %.1f, %02d:%02d)", have, want.time,
-                        static_cast<int>(want.time / 15.0f), static_cast<int>(std::fmod(want.time, 15.0f) * 4.0f));
+        if (std::fabs(diff) > 2.5f && now >= g_SyncBackoffUntil) {
+            if (g_LastSyncAt && now - g_LastSyncAt < 5000 && std::fabs(have - g_LastSyncHave) < 0.05f) {
+                /* We set it a moment ago and it's back where it was: the game
+                   is holding its own clock (the start of a new game, 11:00
+                   until the first tower, a forced hour). Leave it be for a while. */
+                g_SyncBackoffUntil = now + 15000;
+                if (now - g_LastHeldLog > 120000) {
+                    g_LastHeldLog = now;
+                    Logging.Log("[coop] world: the game is holding its clock at %.1f; not following the host's time for now", have);
+                }
+            } else {
+                g_LastSyncAt = now;
+                g_LastSyncHave = have;
+                gdt::SetF32(g_TimeH, want.time);
+                items::NoteClockWrite(want.time);
+                Logging.Log("[coop] world: synced time to host (%.1f -> %.1f, %02d:%02d)", have, want.time,
+                            static_cast<int>(want.time / 15.0f), static_cast<int>(std::fmod(want.time, 15.0f) * 4.0f));
+            }
         }
         s32 days = 0;
         if (gdt::GetS32(g_DaysH, &days) && days != want.days) gdt::SetS32(g_DaysH, want.days);

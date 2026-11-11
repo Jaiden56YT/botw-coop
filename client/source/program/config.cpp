@@ -66,6 +66,11 @@ namespace coop {
                 Copy(tmp, sizeof(tmp), val, vlen);
                 out.test_heal = std::atoi(tmp);
             }
+            else if (is("test_follow")) {
+                char tmp[8];
+                Copy(tmp, sizeof(tmp), val, vlen);
+                out.test_follow = std::atoi(tmp);
+            }
             else if (is("test_research")) {
                 char tmp[8];
                 Copy(tmp, sizeof(tmp), val, vlen);
@@ -176,6 +181,7 @@ namespace coop {
         out.test_life = 0;
         out.test_research = 0;
         out.test_heal = 0;
+        out.test_follow = 0;
         out.beasts_anywhere = false;
         out.log_file = false;
         out.test_gate[0] = '\0';

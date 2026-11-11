@@ -164,7 +164,8 @@ The file lives in the mod's RomFS folder because Ryujinx layers that into the ga
 | `test_drop` | empty | Debug: an item (e.g. `Item_Fruit_A`) that appears at your feet 14 s after you're in the world, as if put down from the menu. |
 | `test_revive` | `false` | Debug: once a partner is with you, sets your life to 0 and runs the game's revive check (skipping fairies), to test co-op revive. |
 | `test_life` | `0` | (`-1`: drops you to a quarter heart and makes the next lethal hit a plain game over, to test reloads.) Debug: once a partner is with you, drops your life to this many quarter hearts and skips fairies for the next lethal hit, to test co-op revive against a real enemy (pair with `test_spawn = Enemy_Bokoblin_Junior`). |
-| `test_research` | 0 | Debug: run a reverse-engineering search in `research.cpp` (1: pointer paths to Link's Havok body, 2: find and move the nearest enemy's rigid body). |
+| `test_research` | 0 | Debug: run a reverse-engineering search in `research.cpp` (1: pointer paths to Link's Havok body, 2: find and move the nearest enemy's rigid body, 3: list the inventory, 4: count who asks for the player's position, 5: log the pause check's clock probes). |
+| `test_follow` | 0 | Debug: warp to the nearest partner whenever they're more than this many metres away, so an unattended test game keeps up with a real player. |
 | `test_heal` | 0 | Debug: once a partner is within 6 m, drops your life to this many quarter hearts, so a partner's shared meal has something to heal. |
 | `test_gate` | empty | Debug: `Flag` or `Flag,Prefix`: the flag that stands in for "has the paraglider", and the flag-name prefix that stands in for the Divine Beast clears, to test the two progress guards. `test_flag = Name:30` sets a flag locally 30 s after connecting. |
 | `test_spawn` entries | | `Actor:ModelUser` spawns the actor with that model user (`@MU`); only some game classes honor it. |
