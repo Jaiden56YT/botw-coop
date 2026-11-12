@@ -21,6 +21,10 @@ if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
 fi
 
 [ -f client/deploy/subsdk9 ] && [ -f client/deploy/main.npdm ] || { echo "build the mod first: make -C client" >&2; exit 1; }
+# The code's symbols, for Savage Wind Recomp (docs/RECOMP.md): made from the same build, and named after it.
+NM="${DEVKITPRO:-/opt/devkitpro}/devkitA64/bin/aarch64-none-elf-nm"
+[ -x "$NM" ] && [ -f client/client.elf ] || { echo "client/client.elf (or devkitA64's nm) is missing: make -C client" >&2; exit 1; }
+{ echo "# symbols of subsdk9 $(shasum client/deploy/subsdk9 | cut -d' ' -f1)"; "$NM" --defined-only client/client.elf | awk 'NF == 3'; } > client/deploy/subsdk9.mod
 if [ -d /opt/homebrew/opt/dotnet/libexec ] && [ -z "${DOTNET_ROOT:-}" ]; then export DOTNET_ROOT=/opt/homebrew/opt/dotnet/libexec; fi
 
 # system name : .NET runtime id : GOOS : GOARCH : program suffix
@@ -41,7 +45,7 @@ for sys in $SYSTEMS; do
     done
     # The mod's code, built.
     mkdir -p "$out/client/deploy"
-    cp client/deploy/subsdk9 client/deploy/main.npdm "$out/client/deploy/"
+    cp client/deploy/subsdk9 client/deploy/main.npdm client/deploy/subsdk9.mod "$out/client/deploy/"
     # The relay.
     mkdir -p "$out/relay"
     (cd server && CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -trimpath -ldflags "-s -w" -o "$out/relay/relay$exe" .)

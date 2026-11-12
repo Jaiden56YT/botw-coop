@@ -7,6 +7,7 @@ Two to four people each play their own copy of Breath of the Wild in Ryujinx, in
 ## What you need
 
 - A computer with [Ryujinx](https://ryujinx.app) (tested on Ryujinx-Nextendo 1.10.4 on a Mac), or a modded Switch (see [SWITCH.md](SWITCH.md); first tried on real hardware in November 2026). Players on either can play together.
+- Or Savage Wind Recomp, the game as a PC program: it has to be built from source with the mod in it, see [RECOMP.md](RECOMP.md). It plays together with the others.
 - **Your own** Breath of the Wild, dumped from your own Switch, with the **1.9.0** update. The mod refuses to run on any other version.
 - The same version of this mod as your friends: everyone uses the same release package.
 - Python 3.11 or newer, for the setup script.

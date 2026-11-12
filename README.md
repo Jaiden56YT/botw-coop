@@ -86,7 +86,7 @@ Not yet (the full list, with priorities and how each could be done, is in [docs/
 
 ## Build and install
 
-Players: see [docs/PLAYING.md](docs/PLAYING.md), and [docs/SWITCH.md](docs/SWITCH.md) for a modded Switch. The short version is one command, which reads your own dump, builds everything and installs it:
+Players: see [docs/PLAYING.md](docs/PLAYING.md), [docs/SWITCH.md](docs/SWITCH.md) for a modded Switch, and [docs/RECOMP.md](docs/RECOMP.md) for Savage Wind Recomp (works on a Mac, untried on Windows). The short version is one command, which reads your own dump, builds everything and installs it:
 
 ```bash
 tools/setup.sh "<base game .nsp or .xci>" "<1.9.0 update .nsp>"                      # into Ryujinx

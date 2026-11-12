@@ -1,0 +1,10 @@
+# Functions of the game (1.9.0) the co-op mod hooks, for Savage Wind Recomp: tools/coop_setup.py --recomp copies
+# this file to <Savage Wind>/extracted/exefs/hooks.txt, and `make gen` there builds the game code with a
+# hook point at the start of each. One per line: <module>+<hex offset>. Keep in step with the mod's hooks
+# (client/source/program/game/offsets.hpp): a missing one is named in Savage Wind's log as "add it to hooks.txt".
+main+cc7598   # PlayerInfo::getPlayerPos
+main+149f24c  # ASList::startAnimation
+main+cead24   # Player::tryRevive
+main+1138814  # TriggerParam::setBool
+main+e84870   # ui::getMessage
+main+10b7a40  # the world's wait for the ground around Link (the co-op mod's warp)

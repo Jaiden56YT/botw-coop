@@ -8,6 +8,12 @@ By default it installs into Ryujinx. For a real (modded) Switch, add
 --switch <folder>: the folder gets an `atmosphere` folder to copy onto the SD
 card (give the SD card itself to write it there directly).
 
+For Savage Wind Recomp (the game as a PC program), add --recomp <its source
+folder>; see docs/RECOMP.md. With game files already extracted there
+(extracted/romfs), the two dump files can be left out:
+
+    python3 tools/coop_setup.py --recomp "<Savage Wind folder>"
+
 The mod's puppet actors (Link, armor, weapons, a horse) are made from the
 game's own files, which can't be shared, so each player builds them from
 their own dump. Nothing in the dump is changed.
@@ -19,7 +25,8 @@ What it does:
   4. builds the mod's code if devkitPro and the source are here, else uses the
      prebuilt client/deploy/subsdk9
   5. builds the relay server if Go and its source are here, else uses relay/
-  6. installs into Ryujinx and/or writes the Switch SD card folder
+  6. installs into Ryujinx and/or writes the Switch SD card folder and/or
+     puts the mod into a Savage Wind Recomp folder
 """
 import os
 import sys
@@ -190,6 +197,37 @@ def extract_files(tool, base, update, gamefiles):
     prefix("/Actor/Pack/Weapon_", gamefiles / "weapons", "weapon")
 
 
+def copy_game_files(romfs, gamefiles):
+    """The same files as extract_files, from a RomFS already extracted to a folder (Savage Wind's extracted/romfs)."""
+    (gamefiles / "packs").mkdir(parents=True, exist_ok=True)
+
+    def one(path, dest):
+        if dest.is_file() and dest.stat().st_size > 0:
+            return
+        src = romfs / path
+        if not src.is_file():
+            fail(f"{src} is missing: the extracted game files aren't complete (base game with the 1.9.0 update merged).")
+        print(f"  {path}", flush=True)
+        shutil.copyfile(src, dest)
+
+    def prefix(pre, dest, what):
+        if dest.is_dir() and any(dest.iterdir()):
+            return
+        print(f"  every {what}", flush=True)
+        dest.mkdir(parents=True, exist_ok=True)
+        for src in sorted((romfs / "Actor" / "Pack").glob(pre + "*")):
+            shutil.copyfile(src, dest / src.name)
+
+    one("Actor/ActorInfo.product.sbyml", gamefiles / "ActorInfo-1.9.0.sbyml")
+    one("System/Resource/ResourceSizeTable.product.srsizetable", gamefiles / "ResourceSizeTable.product.srsizetable")
+    one("Actor/Pack/Npc_DungeonPriest001.sbactorpack", gamefiles / "packs" / "Npc_DungeonPriest001.sbactorpack")
+    one("Actor/Pack/PauseMenuPlayer.sbactorpack", gamefiles / "packs" / "PauseMenuPlayer.sbactorpack")
+    one("Actor/Pack/GameRomHorse01.sbactorpack", gamefiles / "packs" / "GameRomHorse01.sbactorpack")
+    one("Pack/Bootup.pack", gamefiles / "Bootup.pack")
+    prefix("Armor_", gamefiles / "armor", "armor piece")
+    prefix("Weapon_", gamefiles / "weapons", "weapon")
+
+
 def check_version(py, gamefiles):
     # The 1.9.0 update's actor list is bigger than any earlier one.
     code = ("import sys, oead\n"
@@ -209,6 +247,7 @@ def build_code():
         r = subprocess.run(["make", "-C", str(ROOT / "client")], env=env, capture_output=True, text=True)
         if r.returncode != 0:
             fail("the mod's code didn't build:\n" + "\n".join((r.stdout + r.stderr).splitlines()[-15:]))
+        write_manifest(devkit, deploy)
         print("ok")
     elif (deploy / "subsdk9").is_file():
         say("Using the prebuilt mod code (client/deploy/subsdk9)")
@@ -216,6 +255,25 @@ def build_code():
         fail("the mod's code isn't here (client/deploy/subsdk9) and devkitPro isn't installed to build it. "
              "Use a release package, which includes it.")
     return deploy
+
+
+def code_id(deploy):
+    import hashlib
+    return hashlib.sha1((deploy / "subsdk9").read_bytes()).hexdigest()
+
+
+def write_manifest(devkit, deploy):
+    """client/deploy/subsdk9.mod: the code's symbols (`nm` lines), which Savage Wind Recomp needs to take the module
+    as a mod. Its first line names the build it belongs to."""
+    nm = devkit / "devkitA64" / "bin" / f"aarch64-none-elf-nm{EXE}"
+    elf = ROOT / "client" / "client.elf"
+    if not nm.is_file() or not elf.is_file():
+        return
+    r = subprocess.run([str(nm), "--defined-only", str(elf)], capture_output=True, text=True)
+    if r.returncode == 0:
+        lines = [l for l in r.stdout.splitlines() if len(l.split()) == 3]
+        (deploy / "subsdk9.mod").write_text(f"# symbols of subsdk9 {code_id(deploy)}\n" + "\n".join(lines) + "\n",
+                                            newline="\n")
 
 
 def build_relay():
@@ -277,6 +335,59 @@ def install_switch(out, deploy, romfs):
     return config
 
 
+PLAY_CMD = """@echo off
+rem Starts Savage Wind with the co-op mod's game files (written by botw-coop's setup).
+cd /d "%~dp0"
+set "PATH=C:\\msys64\\ucrt64\\bin;%PATH%"
+set "SAVAGEWIND_ROMFS_OVERLAY=coop/romfs"
+if not exist build\\swgame.dll (
+  echo The game code isn't built yet. In an MSYS2 UCRT64 shell in this folder: make gen, then make -j
+  pause
+  exit /b 1
+)
+build\\savagewind.exe extracted --play %*
+"""
+
+PLAY_SH = """#!/bin/sh
+# Starts Savage Wind with the co-op mod's game files (written by botw-coop's setup).
+cd "$(dirname "$0")" || exit 1
+B=build
+[ -x build-vk/savagewind ] && B=build-vk
+SAVAGEWIND_ROMFS_OVERLAY=coop/romfs exec "$B/savagewind" extracted --play "$@"
+"""
+
+
+def install_recomp(sw, deploy, romfs):
+    """Savage Wind Recomp, built from the source that loads code mods (docs/RECOMP.md): the mod's code and its
+    symbols go beside the game's own code, its game files in a folder the launcher script layers over the game's."""
+    exefs = sw / "extracted" / "exefs"
+    if not (sw / "tools" / "mod_add.py").is_file():
+        fail(f"{sw} isn't the Savage Wind source that loads code mods (no tools/mod_add.py). See docs/RECOMP.md "
+             "for which one to get.")
+    if not (exefs / "main").is_file():
+        fail(f"{exefs} has no game code yet. Put your extracted game there first (exefs and romfs; Savage Wind's "
+             "README says how), then run this again.")
+    manifest = deploy / "subsdk9.mod"
+    if not manifest.is_file() or code_id(deploy) not in manifest.read_text().splitlines()[0]:
+        fail("client/deploy/subsdk9.mod is missing or belongs to another build of the mod's code. Use a release "
+             "package, which has both, or build the code here (devkitPro).")
+    shutil.copyfile(deploy / "subsdk9", exefs / "subsdk9")
+    shutil.copyfile(manifest, exefs / "subsdk9.mod")
+    shutil.copyfile(ROOT / "recomp" / "hooks.txt", exefs / "hooks.txt")
+    overlay = sw / "coop" / "romfs"
+    copy_tree(romfs, overlay)
+    config = overlay / "botw-coop" / "config.ini"
+    write_config(config, "127.0.0.1", 3, "false")
+    if WINDOWS:
+        (sw / "play-coop.cmd").write_text(PLAY_CMD, newline="\r\n")
+    else:
+        play = sw / "play-coop.sh"
+        play.write_text(PLAY_SH, newline="\n")
+        play.chmod(0o755)
+    print(f"Put the mod into {sw}")
+    return config
+
+
 def unquarantine():
     """macOS marks downloaded files; the programs in this package would be
     refused ("can't be opened"). Clears the mark on this folder only."""
@@ -288,38 +399,56 @@ def unquarantine():
 
 def main():
     ap = argparse.ArgumentParser(description="Build the BotW co-op mod from your own game dump and install it.")
-    ap.add_argument("base", help="your base game (.nsp or .xci)")
-    ap.add_argument("update", help="your 1.9.0 update (.nsp)")
+    ap.add_argument("base", nargs="?", help="your base game (.nsp or .xci)")
+    ap.add_argument("update", nargs="?", help="your 1.9.0 update (.nsp)")
     ap.add_argument("--switch", metavar="FOLDER", help="also write the files for a modded Switch into FOLDER "
                     "(an `atmosphere` folder to copy to the SD card; or give the SD card itself)")
     ap.add_argument("--ryujinx-dir", metavar="FOLDER", default=os.environ.get("RYU_PATH"),
                     help="Ryujinx's data folder, if it isn't in the usual place")
     ap.add_argument("--no-ryujinx", action="store_true", default=bool(os.environ.get("NO_INSTALL")),
                     help="don't install into Ryujinx")
+    ap.add_argument("--recomp", metavar="FOLDER", help="also put the mod into this Savage Wind Recomp source folder "
+                    "(docs/RECOMP.md). If its extracted/romfs is there, the two dump files aren't needed")
     args = ap.parse_args()
 
-    base, update = Path(args.base).expanduser(), Path(args.update).expanduser()
-    if not base.is_file():
-        fail(f"can't find the base game file: {base}")
-    if not update.is_file():
-        fail(f"can't find the update file: {update}")
-    # The base game is far bigger than its update: given the other way round
-    # (easy when dragging two files onto setup.bat), swap them.
-    if base.stat().st_size < update.stat().st_size:
-        print(f"Taking {update.name} as the base game and {base.name} as the update (by size).")
-        base, update = update, base
+    recomp = Path(args.recomp).expanduser().resolve() if args.recomp else None
+    # With Savage Wind's extracted game at hand and no dump named, the game files come from there (no keys needed).
+    from_folder = recomp / "extracted" / "romfs" if recomp and not args.base else None
+    if from_folder is not None:
+        if not from_folder.is_dir():
+            fail(f"{from_folder} isn't there. Put your extracted game into the Savage Wind folder first, or give "
+                 "your base game and update files as well.")
+        args.no_ryujinx = True
+    else:
+        if not args.base or not args.update:
+            ap.error("give your base game file and your 1.9.0 update file")
+        base, update = Path(args.base).expanduser(), Path(args.update).expanduser()
+        if not base.is_file():
+            fail(f"can't find the base game file: {base}")
+        if not update.is_file():
+            fail(f"can't find the update file: {update}")
+        # The base game is far bigger than its update: given the other way round
+        # (easy when dragging two files onto setup.bat), swap them.
+        if base.stat().st_size < update.stat().st_size:
+            print(f"Taking {update.name} as the base game and {base.name} as the update (by size).")
+            base, update = update, base
     gamefiles = Path(os.environ.get("GAMEFILES", ROOT / ".gamefiles"))
     romfs = Path(os.environ.get("ROMFS_OUT", ROOT / "client" / "romfs"))
 
     say("Checking what's needed")
     unquarantine()
-    check_keys()
+    if from_folder is None:
+        check_keys()
     py = venv_python()
-    tool = romfs_tool()
+    tool = romfs_tool() if from_folder is None else None
     print("ok")
 
-    say("Reading your game dump (the first time takes a few minutes)")
-    extract_files(tool, base, update, gamefiles)
+    if from_folder is None:
+        say("Reading your game dump (the first time takes a few minutes)")
+        extract_files(tool, base, update, gamefiles)
+    else:
+        say(f"Copying the files it needs from {from_folder}")
+        copy_game_files(from_folder, gamefiles)
     check_version(py, gamefiles)
 
     say("Building the puppet actors from your game files")
@@ -343,6 +472,9 @@ def main():
     if args.switch:
         say("Writing the Switch files")
         configs.append(install_switch(Path(args.switch).expanduser().resolve(), deploy, romfs))
+    if recomp:
+        say("Putting the mod into Savage Wind Recomp")
+        configs.append(install_recomp(recomp, deploy, romfs))
 
     print("\nDone. Next:")
     for c in configs:
@@ -351,6 +483,14 @@ def main():
         print("  - In Ryujinx: Options > Settings > Network > turn on Guest Internet Access.")
     if args.switch:
         print("  - Copy the `atmosphere` folder onto your Switch's SD card (merge it with the one there).")
+    if recomp:
+        build = "make gen, then make -j" if WINDOWS or not sys.platform == "darwin" else \
+                "make gen, then make MAC_VULKAN=1 B=build-vk -j"
+        where = "an MSYS2 UCRT64 shell" if WINDOWS else "a terminal"
+        print(f"  - Build Savage Wind's game code with the mod in it: in {where} in\n      {recomp}\n"
+              f"    run: {build}   (again after every update of the mod)")
+        print(f"  - Start the game with {'play-coop.cmd' if WINDOWS else './play-coop.sh'} in that folder. "
+              "More: docs/RECOMP.md")
     if relay:
         print(f"  - One player starts the relay and leaves it running:\n      \"{relay}\"")
     else:

@@ -26,6 +26,9 @@ What you need
   For a modded Switch instead (or as well), add:  --switch <folder>
   and read docs/SWITCH.md.
 
+  For Savage Wind Recomp (the game as a PC program, built from source):
+  read docs/RECOMP.md first. It is a longer road, and untried on Windows.
+
 2. Settings
 
   Setup prints where config.ini is. Open it in a text editor and set:
