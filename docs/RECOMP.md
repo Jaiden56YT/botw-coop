@@ -5,7 +5,7 @@
 **Where this stands (2026-11-11):**
 
 - **Mac (Apple silicon): works.** Most of the mod's testing is done there: up to two recomp copies with a Ryujinx player and a real Switch.
-- **Windows: never run.** The code that loads the mod compiles for Windows, and the mod's own code generates and compiles for a Windows PC, but nobody has started it there yet. If you try it, you are the first: follow [If it doesn't work](#if-it-doesnt-work) so the cause can be found.
+- **Windows: never run.** The changed Savage Wind builds on Windows (checked on GitHub's Windows machine), and the mod's own code generates and compiles for a Windows PC, but nobody has built the game with the mod in it or started it there yet. If you try it, you are the first: follow [If it doesn't work](#if-it-doesnt-work) so the cause can be found.
 - **Linux: never run**, and nothing was checked for it beyond what Mac and Linux share.
 
 It is not an install. The official Savage Wind download can't load code mods, so you build Savage Wind from a changed source, with the mod compiled into the game code. That takes a programmer's toolchain, about 20 GB of disk and half an hour of building. If that isn't for you, play in Ryujinx: see [PLAYING.md](PLAYING.md).
