@@ -220,6 +220,11 @@ namespace coop::game::weapons {
                 const float* m = reinterpret_cast<const float*>(a + offsets::Actor_Mtx);
                 float dx = m[3] - me[0], dy = m[7] - me[1], dz = m[11] - me[2];
                 if (dx * dx + dy * dy + dz * dz > 100.0f) continue; /* 10 m: thrown ones fly */
+                /* Not the ones on a partner's puppet. A warp lands on the
+                   partner's very spot, and until one of the two moved, the
+                   puppet's weapons sat within reach of Link's own bones:
+                   they were sent as his, a different set on every scan. */
+                if (IsPuppetWeapon(a)) continue;
                 found[nfound++] = a;
             }
             reinterpret_cast<CsFn>(Base() + offsets::CriticalSection_Unlock)(cs);
@@ -236,6 +241,13 @@ namespace coop::game::weapons {
             bool any_bone = false;
             for (int b = 0; b < NumBones; b++) any_bone |= have[b];
             if (!any_bone) return;
+            /* The same for a single bone that carried something last time:
+               without it the weapon would be put on the next nearest bone
+               (a bow from Pod_A to Spine_2 and back, once a second, with a
+               geared partner standing on the same spot in Ryujinx). */
+            for (int k = 0; k < g_SentCount; k++)
+                for (int b = 0; b < NumBones; b++)
+                    if (!have[b] && std::strcmp(Bones[b], g_Sent[k].bone) == 0) return;
 
             net::WeaponPose poses[net::MaxWeapons] = {};
             int n = 0;
@@ -433,11 +445,12 @@ namespace coop::game::weapons {
                     if (pouch::Give(gifts[i], info[i])) {
                         Logging.Log("[coop] gifts: %s gave you %s with %s (flags %x, value %d, durability %d), now in your inventory",
                                     from[i], gifts[i], what, info[i].flags, info[i].value, info[i].durability);
-                        notify::Show("%s gave you %s (%s)", from[i], shown, what);
+                        notify::Show("From %.10s: %s (%s)", from[i], shown, what);
                         continue;
                     }
                     Logging.Log("[coop] gifts: no room in the inventory for %s; it lands at your feet without its bonus", gifts[i]);
-                    notify::Show("%s gave you %s, but there's no room: it's at your feet, without its %s", from[i], shown, what);
+                    notify::Show("%.10s gave you %s", from[i], shown);
+                    notify::Show("No room: it lies at your feet, bonus lost");
                     told = true;
                 }
                 /* Spread around the spot ahead so a stack doesn't land in one pile. */

@@ -33,7 +33,7 @@ namespace coop::game::notify {
         constexpr int MaxText = 96;
         constexpr int QueueLen = 8;
         constexpr s64 ShowEveryMs = 3500;  /* the banner shows for about 3 s */
-        constexpr s64 OverrideMs = 2000;   /* the screen loads its text within this */
+        constexpr s64 OverrideMs = 3300;   /* the screen loads its text within this (2 s was too short on a busy machine: the game's own line showed) */
 
         /* Messages waiting to be shown (any thread adds, the game thread shows). */
         char g_Queue[QueueLen][MaxText];

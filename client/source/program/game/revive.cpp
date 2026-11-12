@@ -29,6 +29,7 @@ namespace coop::game::revive {
         constexpr s64 DownMs = 30000;       /* how long a partner has to reach you */
         constexpr float ReachDist = 2.5f;   /* a partner this close... */
         constexpr s64 ReachMs = 1500;       /* ...for this long gets you up */
+        constexpr float NearbyDist = 6.0f;  /* out of time with a partner this close: get up here, no warp */
         constexpr s64 CooldownMs = 120000;  /* between two times going down */
         constexpr s64 PartnerStaleMs = 5000;
 
@@ -47,6 +48,11 @@ namespace coop::game::revive {
         std::atomic<bool> g_PartnerHere{false};
         std::atomic<s64> g_ReadyAt{0};
         std::atomic<s64> g_NowMs{0};
+
+        /* Partners who are down themselves can't get anyone up. A down player
+           repeats the message every 5 s, so one that stops (they left) runs out. */
+        constexpr s64 PeerDownMs = 7000;
+        std::atomic<s64> g_PeerDownUntil[256];
 
         /* Down: set by the revive hook, run by Tick. */
         std::atomic<bool> g_Down{false};
@@ -81,6 +87,12 @@ namespace coop::game::revive {
                 g_TestGameOver = false;
                 return false;
             }
+            /* The landing of a warp isn't a hit: no fairy spent, nobody down. */
+            s32 start_life = 0;
+            if (life && warp::Guarding(g_NowMs.load(), &start_life) && start_life > 0) {
+                *life = start_life;
+                return true;
+            }
             /* A fairy or Mipha's Grace first (the test skips them to reach ours). */
             if (!g_TestSkipGame && Orig(player)) return true;
             s64 now = g_NowMs.load();
@@ -98,8 +110,9 @@ namespace coop::game::revive {
     namespace {
         void GetUp() {
             g_PoseAt = 0;
-            HoldLocalPose(false);
-            PlayLocalAS("Wait");
+            /* His own state machine may be waiting for a sequence that was
+               held back (getting up after a fall): play that one. */
+            if (!ReleaseLocalPose()) PlayLocalAS("Wait");
         }
     }
 
@@ -122,6 +135,7 @@ namespace coop::game::revive {
         for (auto& q : peers)
             if (q.present && q.id == player_id) p = &q;
         const char* name = p ? p->name : "Your partner";
+        g_PeerDownUntil[player_id].store(state == 1 ? g_NowMs.load() + PeerDownMs : 0);
         if (state == 1) {
             float me[3];
             char where[32] = "";
@@ -133,7 +147,7 @@ namespace coop::game::revive {
                 else std::snprintf(where, sizeof(where), " right next to you");
             }
             Logging.Log("[coop] revive: %s is down at (%.1f, %.1f, %.1f), %u s left", name, pos[0], pos[1], pos[2], seconds);
-            notify::Show("%s is down%s! Reach them within %u s", name, where, seconds);
+            notify::Show("%.10s is down%s! %u s left", name, where, seconds);
         } else if (state == 0) {
             Logging.Log("[coop] revive: %s is back up", name);
             notify::Show("%s is back up", name);
@@ -211,7 +225,7 @@ namespace coop::game::revive {
                 if (!p.present || !p.has_state || p.state.map_area != area) continue;
                 float dx = p.state.pos[0] - me[0], dy = p.state.pos[1] - me[1], dz = p.state.pos[2] - me[2];
                 float d = dx * dx + dy * dy + dz * dz;
-                if (d <= ReachDist * ReachDist) who = p.name;
+                if (d <= ReachDist * ReachDist && now >= g_PeerDownUntil[p.id].load()) who = p.name;
                 if (!nearest || d < nearest_d) nearest = &p, nearest_d = d;
             }
             if (who) {
@@ -234,13 +248,18 @@ namespace coop::game::revive {
                 g_Down.store(false);
                 GetUp();
                 net::SendDowned(2, g_DownAt, 0);
-                if (nearest && warp::GoToPartner(nearest->id, now)) {
+                if (nearest && nearest_d <= NearbyDist * NearbyDist) {
+                    /* They're right here (down too, most likely): no warp. */
+                    if (life) *life = RespawnLife;
+                    Logging.Log("[coop] revive: nobody reached you in time; up again with 1 heart");
+                    notify::Show("Nobody came. You get up with 1 heart");
+                } else if (nearest && warp::GoToPartner(nearest->id, now)) {
                     if (life) *life = RespawnLife;
                     Logging.Log("[coop] revive: nobody reached you in time; respawning beside %s with 1 heart", nearest->name);
-                    notify::Show("Nobody reached you. You come to beside %s with 1 heart", nearest->name);
+                    notify::Show("Nobody came: you wake by %.10s, 1 heart", nearest->name);
                 } else {
                     Logging.Log("[coop] revive: nobody reached you in time");
-                    notify::Show("Nobody reached you in time. Careful: the next hit ends it");
+                    notify::Show("Nobody came. Careful: the next hit ends it");
                 }
             }
         }

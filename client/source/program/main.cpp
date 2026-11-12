@@ -15,6 +15,7 @@
 #include "game/meals.hpp"
 #include "game/map.hpp"
 #include "game/saves.hpp"
+#include "game/warp.hpp"
 
 namespace {
 
@@ -54,6 +55,7 @@ namespace {
         coop::game::meals::Init();
         coop::game::map::Init();
         coop::game::revive::Install();
+        coop::game::warp::Install();
         coop::game::notify::Install();
         coop::game::weapons::Init();
         coop::net::Start(build_id);

@@ -400,7 +400,7 @@ namespace coop::game::progress {
                     if (!have && batch[i].live) {
                         Logging.Log("[coop] progress: %s freed a Divine Beast (%s); not shared: you weren't inside with them", who,
                                     g_Names[name]);
-                        notify::Show("%s freed a Divine Beast. Free it together to share it", who);
+                        notify::Show("%.10s freed a Divine Beast. Yours still waits", who);
                     }
                     continue;
                 }

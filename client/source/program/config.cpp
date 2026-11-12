@@ -59,6 +59,7 @@ namespace coop {
             else if (is("test_keys")) Copy(out.test_keys, sizeof(out.test_keys), val, vlen);
             else if (is("test_drop")) Copy(out.test_drop, sizeof(out.test_drop), val, vlen);
             else if (is("beasts_anywhere")) out.beasts_anywhere = IsTrue(val, vlen);
+            else if (is("warp_direct")) out.warp_direct = IsTrue(val, vlen);
             else if (is("log_file")) out.log_file = IsTrue(val, vlen);
             else if (is("test_gate")) Copy(out.test_gate, sizeof(out.test_gate), val, vlen);
             else if (is("test_heal")) {
@@ -66,6 +67,7 @@ namespace coop {
                 Copy(tmp, sizeof(tmp), val, vlen);
                 out.test_heal = std::atoi(tmp);
             }
+            else if (is("test_leader")) Copy(out.test_leader, sizeof(out.test_leader), val, vlen);
             else if (is("test_follow")) {
                 char tmp[8];
                 Copy(tmp, sizeof(tmp), val, vlen);
@@ -182,7 +184,9 @@ namespace coop {
         out.test_research = 0;
         out.test_heal = 0;
         out.test_follow = 0;
+        out.test_leader[0] = '\0';
         out.beasts_anywhere = false;
+        out.warp_direct = false;
         out.log_file = false;
         out.test_gate[0] = '\0';
 

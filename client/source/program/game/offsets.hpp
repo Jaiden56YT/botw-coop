@@ -208,6 +208,13 @@ namespace coop::game::offsets {
        table (+0xd28) whose order depends on what loaded first: always the
        same on a console and in Ryujinx, but not in the recomp, where the slot
        was empty in one run of two. So the actor chain is tried first. */
+    /* bool (): are the map sections around Link (200 m each way) still
+       loading? Asked on every update; while true the game pauses the world
+       (pause reason 9). Found by the Savage Wind Recomp project. */
+    constexpr uintptr_t World_GroundLoading = 0x10b7a40;
+    /* The player's "highest point since leaving the ground", kept twice: fall
+       damage is the drop from it (found by the Savage Wind Recomp project). */
+    constexpr uintptr_t Player_FallTop = 0x860, Player_FallTop2 = 0x20d0;
     constexpr uintptr_t Actor_Physics = 0x578, Physics_ToCharacter = 0x80, Character_ToBody = 0x410;
     constexpr uintptr_t HkBody_Pos = 0x1c0; /* motion transform translation */
     constexpr uintptr_t HkBody_Vel = 0x270; /* motion linear velocity */

@@ -41,14 +41,14 @@ Several features were only tested against `tools/fakehost` (a scripted fake part
 
 | Feature | What was checked | What still needs checking |
 |---|---|---|
-| Shared meals | A fake partner's meals healed player 2, and player 2's meal reached the fake partner. **Two real games: player 1 ate a 5-heart dish, player 2 went from 5 to 10 hearts** (after fixing the guest's time sync, which made the meal look like a heal outside the menu). | Eating several dishes quickly. Hearty dishes (yellow hearts) when the partner is at full health. Elixirs. |
-| Downed state | A fake partner walked over and got player 2 up, or stayed away until the time ran out. **Two real games: a partner standing by got player 2 up, and so did a partner who warped over.** | Both players going down at once. Going down in water, mid-air, while gliding or in lava (you're now only held sideways, so you drop or float; not tried). Going down inside a shrine. |
+| Shared meals | A fake partner's meals healed player 2, and player 2's meal reached the fake partner. **Two real games: player 1 ate a 5-heart dish, player 2 went from 5 to 10 hearts** (after fixing the guest's time sync, which made the meal look like a heal outside the menu). | Hearty dishes (yellow hearts) when the partner is at full health. Elixirs. **Two dishes eaten one after the other in one menu visit were shared one by one (+3 hearts, +3 hearts), between two recomp games.** |
+| Downed state | A fake partner walked over and got player 2 up, or stayed away until the time ran out. **Two real games: a partner standing by got player 2 up, and so did a partner who warped over.** | **Both down at once (two recomp games): neither gets the other up, and after 30 s each gets up where they are with 1 heart.** **Going down from a fall: Link couldn't move after being got up; fixed (see "A dropped request" in the reverse-engineering notes).** Going down in water, mid-air, while gliding or in lava (you're now only held sideways, so you drop or float; not tried). Going down inside a shrine. |
 | Low-hearts warning | A fake partner whose hearts drop. | Real games. Also, it shouldn't fire on a fresh save with 3 hearts, or after a heart-container upgrade. |
 | Travel banners | A fake partner jumping 1.5 km and walking into a shrine. **Two real games: a real fast travel showed "TestTwo traveled: 648 m away", and the follow-up warp showed "TestOne warped to you".** This found and fixed a hang: fast travel with a partner connected never finished loading. | Shrine exit, and the shrine banners between two real games (a real player did walk into a shrine with a fake partner connected). Divine Beasts. Hyrule Castle. |
 | Separate co-op saves | Test copies with a 100% save: the first copy, a save from the menu, the second launch and the backup. | **Your own real save and profile.** A fresh save with no slots. Several Ryujinx user profiles. Master Mode saves (`tracker/trackblock_hard*`). Autosaves in many slots. What happens if the game is killed during the first copy. |
-| Warp | 15 m, 500 m and 1.5 km warps, a 4.2 km warp in hops, and warps between two real games of 50 m and of 648 m in hops. | Warping to a partner who is gliding, climbing, swimming, standing on a moving platform or inside a building. Warping while you're in a menu. Warping in the desert (heat) and on snow peaks (cold). Warping at night during a Blood Moon. Warping a long way in Hebra, where 1,100 m up may not clear every peak. |
+| Warp | 15 m, 500 m and 1.5 km warps, a 4.2 km warp in hops, and warps between two real games of 50 m and of 648 m in hops. **A map tour with a recomp leader and recomp and Ryujinx followers (`tools/tour.py`): recomp followers arrived every time, with their hearts; the Ryujinx follower froze on most warps over 3 km (see 5.3).** | Warping to a partner who is gliding, climbing, swimming, standing on a moving platform or inside a building. Warping while you're in a menu. Warping in the desert (heat) and on snow peaks (cold). Warping at night during a Blood Moon. Warping a long way in Hebra, where 1,100 m up may not clear every peak. |
 | Enemy sync | Bokoblins at one camp, with two real games. | Big enemies (Hinox, Stone Talus, Lynel, Molduga, Guardians), whose rigid body may not sit at the actor's position, so the body search would fail. Flying and swimming enemies (Keese, Octoroks, Lizalfos in water). Enemies on horseback. Enemies in shrines and Divine Beasts. Ownership passing from one player to the other mid-fight. 20 or more enemies at once (one message holds 24). |
-| Trading | Weapons and materials with a fake partner, and a menu drop. **Two real games: a Royal Claymore with Durability Up dropped from the menu went each way, into the inventory with its bonus where there was room and to the ground without it where there wasn't.** | Materials between two real games. Thrown weapons with bonuses. The Master Sword. Throwing into water or lava. |
+| Trading | Weapons and materials with a fake partner, and a menu drop. **Two real games: a Royal Claymore with Durability Up dropped from the menu went each way, into the inventory with its bonus where there was room and to the ground without it where there wasn't.** | **Materials between two recomp games: two held Bokoblin Guts put down beside the partner went over ("gave you Bokoblin Guts x2"); put down on a slope they rolled 5 m away and stayed, as they should.** Thrown weapons with bonuses. The Master Sword. Throwing into water or lava. |
 | Riding | A fake partner "riding". | A real player on a real horse: the saddle height, the gaits, and warping being refused while riding. A horse spawned for the test ran off before the scripted player could mount it. |
 | 3–4 players | Player 2 plus two fake partners. | Three or four real games, for warp cycling, enemy ownership between more than two players, and banners. |
 | Over the internet | Everything ran on one Mac (`127.0.0.1`). | Two Macs over Tailscale or ZeroTier, with real lag (50–150 ms). Enemy steering and warps were tuned with no lag at all. |
@@ -108,7 +108,7 @@ The design wants config settings for enemy health, enemy damage and stun time. F
 
 ### 3.3 What happens when nobody comes (P2, M) — mostly done
 **Done:** when the 30 s run out you come to beside the nearest partner in your area with 1 heart (checked with a fake partner 16 m away). With no partner in the area you're released on a quarter heart as before.
-**Left:** no stamina penalty (the stamina address isn't known in 1.9.0); both players down at once isn't handled specially (each respawns beside the other); a game over can still happen once you're released alone.
+**Left:** no stamina penalty (the stamina address isn't known in 1.9.0); with both players down at once neither can get the other up, and each gets up where they are with 1 heart when the time runs out (no trip to a safe spot yet); a game over can still happen once you're released alone.
 **Before:** you were released on a quarter heart, and the next hit was a normal game over, which reloads your save and drops you out of the shared state.
 **Design:**
 - Respawn next to your partner instead, weakened (less stamina for 60 s).
@@ -181,8 +181,13 @@ The puppet shows movement, attacks, the bow, throws and the shield. It doesn't s
 **Wanted:** warp into the shrine or Divine Beast your partner is in, or back out.
 **How:** that needs a stage change: loading the shrine's map and placing Link at its entrance. No free-position stage-change call has been found yet. Shrine entrances are named start points, which might work with the same event mechanism fast travel uses.
 
-### 5.3 A smoother long warp (P3, M)
-**Today:**
+### 5.3 A long warp that always arrives (P1, L, ?)
+**The problem (2026-11-11):** in Ryujinx, warps of 3 to 6 km froze in the sky more often than not: "Warp stopped: the area didn't load", Link hanging at 1,100 m with the loading icon, for good. The released build does it too. It went unnoticed because the long test warps all ran in the first seconds after a save loaded, when the game doesn't yet check the ground. In Savage Wind Recomp the same warps arrive. A Switch hasn't been tried over that distance.
+**Tried:** slower hops; going back to the last hop that loaded; telling the game the ground is ready so the world keeps running (the hook is in, `warp_direct`); one jump with Link held at the landing spot. The last one is reliable in the recomp and works about half the time in Ryujinx. Details in the reverse-engineering notes under "Why far warps freeze".
+**The real fix:** the game's own stage change to a free position (what fast travel and leaving a shrine do, with a loading screen). Until then: a failed far warp should at least put Link back on the ground where he started instead of leaving him in the sky.
+**Also seen:** a warp into Korok Forest hangs Ryujinx outright a few seconds after arriving (three of three, released build too).
+
+**Smoother, once it's reliable. Today:**
 - warps over 250 m jump through the sky in 250 m steps at 1,100 m up;
 - you see the sky between steps;
 - the cold up there costs a little health, which the mod gives back afterwards.
@@ -395,6 +400,8 @@ Compile these out of normal builds:
 
 | Problem | Where | Priority |
 |---|---|---|
+| **Far warps (several km) can freeze in the sky in Ryujinx**, and one into Korok Forest hangs the game. See 5.3. | `warp.cpp` | P1 |
+| Armor read as "none" for a moment while an area loads after a warp is sent to partners, who see the puppet's armor come off and back on. | `gear.cpp` | P3 |
 | **Fixed (not tried in the air or water):** a downed player is now only held sideways, so they drop or float. | `revive.cpp` | P2 |
 | **Fixed for a 5 m test offset; no real flier tried:** enemy copies now follow height too when it differs by more than 0.75 m. | `enemies.cpp` | P2 |
 | **Partly fixed:** the body search takes the nearest free body within 2 m (3 m in height) and keeps the offset. But a sleeping Stone Talus has no body of this kind at all, so big enemies may need another way; none has been tried awake. | `enemies.cpp` | P2 |

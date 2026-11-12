@@ -776,7 +776,8 @@ namespace coop::net {
                 game::research::SetTest(g_Config.test_research);
                 game::items::SetProbeDebug(g_Config.test_research == 5);
                 game::meals::SetTestLife(g_Config.test_heal);
-                game::warp::SetTestFollow(g_Config.test_follow);
+                game::warp::SetTestFollow(g_Config.test_follow, g_Config.test_leader);
+                game::warp::SetDirect(g_Config.warp_direct);
                 game::weapons::SetTest(g_Config.test_bind);
                 game::items::SetTest(g_Config.test_drop);
                 game::SetKeyScript(g_Config.test_keys);
@@ -796,7 +797,7 @@ namespace coop::net {
                     /* Said once, after a few tries; again only after a connection that worked. */
                     if (++g_FailedTries == 3 && !g_FailShown) {
                         g_FailShown = true;
-                        game::notify::Show("Co-op: can't reach the server at %s:%d", g_Config.host, g_Config.port);
+                        game::notify::Show("Co-op: can't reach %s:%d", g_Config.host, g_Config.port);
                     }
                     Sleep(retry_ms);
                     retry_ms = retry_ms * 2 > 10000 ? 10000 : retry_ms * 2;

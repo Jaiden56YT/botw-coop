@@ -21,10 +21,12 @@ namespace coop {
         char test_keys[256];  /* debug: buttons to press once in the world, e.g. "Plus,L,L,A:300,Plus" */
         char test_drop[64];   /* debug: spawn this item at Link's feet as if dropped from the inventory */
         bool log_file;        /* also write the log to sd:/botw-coop/log.txt (a Switch has no other way to show it) */
+        bool warp_direct;     /* a far warp goes in one jump, not in hops through the sky (see warp.cpp) */
         bool beasts_anywhere; /* share Divine Beast clears with partners who weren't inside with you */
         char test_gate[64];   /* debug: flag that stands in for "has the paraglider" (progress is held until it's set) */
         int test_heal;        /* debug: once a partner is near, drop to this life (quarter hearts) to test shared meals */
         int test_follow;      /* debug: warp to the nearest partner whenever they're more than this many metres away */
+        char test_leader[32]; /* debug: test_follow follows only the player with this name */
         int test_research;    /* debug: run a reverse-engineering search (research.cpp) */
         int test_life;        /* debug: drop to this life near a partner and let a real hit test the revive */
     };

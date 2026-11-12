@@ -154,7 +154,7 @@ namespace coop::game::meals {
             char hearts[24];
             Hearts(after - before, hearts, sizeof(hearts));
             Logging.Log("[coop] meals: %s shared a meal: %d -> %d", from->name, before, after);
-            notify::Show("%s shared a meal with you: +%s", from->name, hearts);
+            notify::Show("%.10s shared a meal with you: +%s", from->name, hearts);
         }
 
         /* Our own meal: hearts went up while the menu is open. */
@@ -179,7 +179,7 @@ namespace coop::game::meals {
                 char hearts[24];
                 Hearts(g_Eaten, hearts, sizeof(hearts));
                 Logging.Log("[coop] meals: ate %d quarter hearts next to %s, shared", g_Eaten, names);
-                notify::Show("You shared your meal with %s: +%s", names, hearts);
+                notify::Show("Meal shared with %.16s: +%s", names, hearts);
             }
             g_Eaten = 0;
         }

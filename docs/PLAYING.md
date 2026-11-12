@@ -47,7 +47,7 @@ Two to four people each play their own copy of Breath of the Wild in Ryujinx, in
 
 The first player to connect is the **host**: everyone follows their time of day, weather and Blood Moon. If the host leaves, someone else becomes host and play carries on.
 
-Banners also tell you what's wrong: "Co-op: can't reach the server at ..." (wrong address, server not running, or a firewall in the way), "Co-op: no network connection", or "Co-op is off: your mod and the server are different versions" (someone needs to update).
+Banners also tell you what's wrong: "Co-op: can't reach ..." (and the address) (wrong address, server not running, or a firewall in the way), "Co-op: no network connection", or "Co-op is off: your mod and the server are different versions" (someone needs to update).
 
 ## Playing over the internet
 
@@ -80,7 +80,7 @@ With the mod installed, the game plays from a **separate copy** of your saves.
 | **Eat while standing next to your partner** | They're healed by the same amount. |
 | **Stand next to a downed partner for a moment** | They get back up with 3 hearts. |
 
-Warping only works when you're both outside, or both in the same shrine. Far-away partners are reached in hops through the sky, about a second per kilometre; you lose no hearts on the way. You can't warp while riding.
+Warping only works when you're both outside, or both in the same shrine. Far-away partners are reached in hops through the sky, a few seconds per kilometre; you lose no hearts on the way or on landing. Over several kilometres a warp can get stuck (see [If something goes wrong](#if-something-goes-wrong)): fast-traveling near your partner first is the safe way. You can't warp while riding.
 
 ## What you share
 
@@ -106,7 +106,7 @@ Banners at the top of the screen tell you what's going on: who joined or left, w
 If a hit would kill you and you have no fairy and no Mipha's Grace, you don't get a game over while a partner is in the same area. You **go down** instead:
 
 - You're stuck where you fell on a quarter of a heart, and your partner sees you collapse and gets a banner with how far away you are.
-- They have **30 seconds** to reach you (warping counts). Standing next to you gets you up with 3 hearts.
+- They have **30 seconds** to reach you (warping counts). Standing next to you gets you up with 3 hearts. A partner who is down too can't get you up.
 - If nobody comes, you wake up beside your nearest partner with 1 heart.
 - This can happen once every 2 minutes. A second lethal hit inside that time is a normal game over.
 
@@ -131,9 +131,11 @@ The full list is in [REMAINING.md](REMAINING.md).
 | Problem | Try |
 |---|---|
 | No "Co-op:" banner at all after loading a save | The mod isn't loaded: check it's installed (run setup again), that the game is 1.9.0, and in Ryujinx that mods are enabled for the game. |
-| "Co-op: can't reach the server at ..." | Check `server` and `port` in `config.ini` against what the relay printed, that the relay is running, that the host allowed it through the firewall, and (Ryujinx) that Guest Internet Access is on. The relay's window shows who has joined. |
+| "Co-op: can't reach ..." (and the address) | Check `server` and `port` in `config.ini` against what the relay printed, that the relay is running, that the host allowed it through the firewall, and (Ryujinx) that Guest Internet Access is on. The relay's window shows who has joined. |
 | Connected, but your friend isn't there | Different `password`. Everyone with the same word plays together. |
 | "Co-op is off: … different versions" | Everyone, and the server, needs the same version of the mod. |
 | The game says it isn't 1.9.0 (in Ryujinx's log) | Install the 1.9.0 update in Ryujinx. |
 | Two copies of the game on one Mac hang on the loading screen | A Ryujinx quirk: pause the first copy (in Ryujinx: Actions → Pause Emulation) while the second one loads. |
+| A game on a Mac stops moving (0 FPS) while another window lies over it | Ryujinx stops a game whose window is completely covered. Keep at least a part of every game window visible. |
+| "Warp stopped: the area didn't load", and Link hangs in the sky with the loading icon | A far warp (several kilometres) got ahead of what the game can load. It doesn't recover by itself: load your last save from the menu if it still opens, or restart the game. Shorter warps are safe; for a far partner, fast-travel near them first. |
 | You want your co-op saves from an earlier day | They're in BotW's save folder under `coop_backups/1`, `2` and `3`. Right-click the game in Ryujinx → Open User Save Directory. Copy one over the `coop` folder while the game is closed. |

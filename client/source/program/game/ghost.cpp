@@ -848,13 +848,27 @@ namespace coop::game {
 
     uintptr_t SpawnActor(const char* name, const float (&pos)[3], float rot_y) { return SpawnNamed(name, pos, rot_y); }
 
-    bool SafeToSpawn(s64 now) { return now >= g_NoSpawnUntil && now - items::LastPausedMs() > 1500; }
+    /* Not in a menu or a loading screen, and not while a warp is loading the
+       map around Link: with the world kept running there (it isn't paused,
+       so the clock says nothing), a partner's armor spawned at that moment
+       was the last thing the game's main thread did, twice. */
+    bool SafeToSpawn(s64 now) {
+        return now >= g_NoSpawnUntil && now - items::LastPausedMs() > 1500 && !warp::Loading(now);
+    }
 
     /* Sees every animation sequence the game starts. Used to learn which
        sequence the local player is in (debug logging for now). */
     namespace {
         std::atomic<bool> g_OwnAS{false};          /* we're starting a sequence on the local player ourselves */
         std::atomic<bool> g_HoldPose{false};       /* keep the sequence we started: drop the game's own */
+        struct HeldAS {
+            char name[64];
+            float a, b;
+            int bank;
+            bool flag, set;
+        };
+        HeldAS g_Held[2]; /* the game's last dropped request for the body and the upper body */
+        std::atomic_flag g_HeldLock = ATOMIC_FLAG_INIT;
     }
 
     HOOK_DEFINE_TRAMPOLINE(StartAnimationHook) {
@@ -864,8 +878,20 @@ namespace coop::game {
                put WaitAttention back within a frame). Those are dropped
                until he's up; body and upper body only. */
             if (g_HoldPose.load(std::memory_order_relaxed) && target <= 1 && !g_OwnAS.load(std::memory_order_relaxed) &&
-                as_list == LocalPlayerASList())
+                as_list == LocalPlayerASList()) {
+                /* Remember the last one per slot: his state machine may be
+                   waiting for it to end, so it's played when the hold ends. */
+                if (name.str && target >= 0) {
+                    while (g_HeldLock.test_and_set(std::memory_order_acquire)) {}
+                    HeldAS& h = g_Held[target];
+                    bool changed = !h.set || std::strcmp(h.name, name.str) != 0;
+                    std::snprintf(h.name, sizeof(h.name), "%s", name.str);
+                    h.a = a, h.b = b, h.bank = bank, h.flag = flag, h.set = true;
+                    g_HeldLock.clear(std::memory_order_release);
+                    if (changed) Logging.Log("[coop] pose: held back the game's '%s' (slot %d)", name.str, target);
+                }
                 return;
+            }
             Orig(as_list, a, b, name, target, bank, flag);
             if (!name.str || as_list != LocalPlayerASList()) return;
             if (target != 0 && g_LogPlayerAS.load(std::memory_order_relaxed))
@@ -891,6 +917,16 @@ namespace coop::game {
         }
     };
 
+    bool IsPuppetWeapon(uintptr_t actor) {
+        if (!actor) return false;
+        for (auto& g : g_Ghosts) {
+            if (!g.used) continue;
+            for (uintptr_t w : g.weapon)
+                if (w == actor) return true;
+        }
+        return false;
+    }
+
     bool PlayLocalAS(const char* name) {
         uintptr_t info = Read<uintptr_t>(Base() + offsets::PlayerInfoInstance);
         uintptr_t actor = info ? Read<uintptr_t>(info + offsets::PlayerInfo_PlayerActor) : 0;
@@ -901,7 +937,35 @@ namespace coop::game {
         return ok;
     }
 
-    void HoldLocalPose(bool on) { g_HoldPose.store(on); }
+    void HoldLocalPose(bool on) {
+        if (on && !g_HoldPose.load()) {
+            while (g_HeldLock.test_and_set(std::memory_order_acquire)) {}
+            g_Held[0].set = g_Held[1].set = false;
+            g_HeldLock.clear(std::memory_order_release);
+        }
+        g_HoldPose.store(on);
+    }
+
+    bool ReleaseLocalPose() {
+        g_HoldPose.store(false);
+        HeldAS held[2];
+        while (g_HeldLock.test_and_set(std::memory_order_acquire)) {}
+        std::memcpy(held, g_Held, sizeof(held));
+        g_Held[0].set = g_Held[1].set = false;
+        g_HeldLock.clear(std::memory_order_release);
+        uintptr_t as_list = LocalPlayerASList();
+        if (!as_list) return false;
+        uintptr_t slot = Read<uintptr_t>(Base() + offsets::Got_SafeStringVtableBase);
+        auto start = reinterpret_cast<bool (*)(uintptr_t, float, float, const SafeString&, int, int, bool)>(
+            Base() + offsets::ASList_StartAnimation);
+        for (int t = 0; t < 2; t++) {
+            if (!held[t].set) continue;
+            SafeString str{slot + 0x10, held[t].name};
+            start(as_list, held[t].a, held[t].b, str, t, held[t].bank, held[t].flag);
+            Logging.Log("[coop] pose: back to the game's '%s' (slot %d)", held[t].name, t);
+        }
+        return held[0].set;
+    }
 
     u32 LocalAnimCategory() {
         u32 body = g_LocalAnim.load(std::memory_order_relaxed);

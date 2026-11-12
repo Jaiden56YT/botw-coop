@@ -29,10 +29,15 @@ namespace coop::game {
     bool SafeToSpawn(s64 now_ms);
 
     /* Plays one of the local player's own body sequences ("Dead", "Wait"). Game thread. */
+    /* One of the weapon actors the mod put on a partner's puppet. */
+    bool IsPuppetWeapon(uintptr_t actor);
     bool PlayLocalAS(const char* name);
     /* While on, the game's own body sequences for the local player are dropped,
        so the one started with PlayLocalAS stays. */
     void HoldLocalPose(bool on);
+    /* Ends the hold and starts what the game last asked for meanwhile.
+       False if it asked for no body sequence. */
+    bool ReleaseLocalPose();
 
     /* Called by the network thread once settings are loaded. */
     void ConfigureGhosts(const GhostSettings& settings);

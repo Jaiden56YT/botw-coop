@@ -22,5 +22,13 @@ namespace coop::game::warp {
     /* Test helper (test_follow): keep warping to the nearest partner once they're this far away. */
     /* Warping right now, or arrived within the last few seconds. */
     bool Busy(s64 now_ms);
-    void SetTestFollow(int metres);
+    /* The map around Link may still be loading because of a warp: nothing may be spawned. */
+    bool Loading(s64 now_ms);
+    void Install();
+    /* config.ini warp_direct: a far warp goes in one jump (see warp.cpp). */
+    void SetDirect(bool on);
+    void SetTestFollow(int metres, const char* leader);
+    /* A warp is under way or has just landed: hearts lost now come back.
+       Gives the hearts he set off with. */
+    bool Guarding(s64 now_ms, s32* start_life);
 }

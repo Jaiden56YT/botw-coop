@@ -22,6 +22,7 @@ namespace coop::game::status {
 
         constexpr s64 RepeatMs = 30000; /* at most one warning per partner this often */
         constexpr s64 StaleMs = 3000;
+        constexpr s64 TravelSettleMs = 2500; /* a warp's hops are about a second apart */
 
         struct Watch {
             u8 id;
@@ -32,6 +33,7 @@ namespace coop::game::status {
             bool has_last;
             u32 last_area;
             float last_pos[3];
+            s64 travel_at; /* a jump was seen: announce it at this time, unless they jump again */
         };
         Watch g_Watch[net::MaxPeers];
 
@@ -40,7 +42,7 @@ namespace coop::game::status {
                 if (w.used && w.id == id) return w;
             for (auto& w : g_Watch)
                 if (!w.used) {
-                    w = {id, true, false, -RepeatMs, false, 0, {0, 0, 0}};
+                    w = {id, true, false, -RepeatMs, false, 0, {0, 0, 0}, 0};
                     return w;
                 }
             return g_Watch[0];
@@ -64,7 +66,7 @@ namespace coop::game::status {
 
         /* A partner fast-traveled, warped, or went into or out of a shrine:
            say so, with how to follow. Area 0 is a loading screen: skipped. */
-        void Travel(Watch& w, const net::Peer& p, const float* me, u32 my_area) {
+        void Travel(Watch& w, const net::Peer& p, const float* me, u32 my_area, s64 now) {
             u32 area = p.state.map_area;
             if (area == 0) return;
             const float* pos = p.state.pos;
@@ -90,9 +92,19 @@ namespace coop::game::status {
                        shows it is being far away one moment and beside you the next. */
                     notify::Show("%s warped to you", p.name);
                 } else if (jumped) {
+                    /* A warp comes in hops, one jump each: wait until they
+                       stay put, then say where they ended up, once. */
                     if (by_me) notify::Show("%s warped to you", p.name);
-                    else if (area == my_area) notify::Show("%s traveled: %s away (hold L3 to follow)", p.name, dist);
-                    else notify::Show("%s traveled", p.name);
+                    else w.travel_at = now + TravelSettleMs;
+                }
+                if (w.travel_at && now >= w.travel_at) {
+                    w.travel_at = 0;
+                    if (by_me) {
+                    } else if (area == my_area) {
+                        notify::Show("%.10s is %s away (hold L3 to follow)", p.name, dist);
+                    } else {
+                        notify::Show("%s traveled", p.name);
+                    }
                 }
             }
             w.has_last = true;
@@ -123,7 +135,7 @@ namespace coop::game::status {
             u16 life = p.state.health, max = p.state.max_hp;
             if (max == 0) continue;
             Watch& w = For(p.id);
-            Travel(w, p, me, area);
+            Travel(w, p, me, area, now);
             if (w.low) {
                 if (IsFine(life, max)) w.low = false;
                 continue;
@@ -145,7 +157,7 @@ namespace coop::game::status {
                 else if (d >= 40.0f) std::snprintf(where, sizeof(where), ", %.0f m away", d);
             }
             Logging.Log("[coop] status: %s is low (%u/%u)", p.name, life, max);
-            notify::Show("%s is low on hearts: %s left%s", p.name, hearts, where);
+            notify::Show("%.10s is low (%s)%s", p.name, hearts, where);
         }
     }
 }
