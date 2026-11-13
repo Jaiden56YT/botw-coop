@@ -88,3 +88,4 @@ These are the Switch-only things, and how each was handled:
 | Speed | A Mac is several times faster. | Searching memory for an enemy's physics body took up to 170 ms on the Mac. | The search is now spread over frames, 3 ms at a time. Finding a body may take a few seconds on a Switch. |
 | Log | Ryujinx's console. | Nothing visible. | `log_file = true` writes `sd:/botw-coop/log.txt`; connection problems also show as banners. |
 | Two-game quirks | Two Ryujinx windows on one Mac can hang on loading. | Doesn't apply. | — |
+| Travel to a far partner | A loading screen takes 20 to 50 s. | The same call as the game's own fast travel, so it should take what fast travel takes. | **Not run on a Switch yet.** Needs `romfs/botw-coop/travel-points.txt`, which the setup writes: run it again if your Switch files are older than 2026-11-12. |

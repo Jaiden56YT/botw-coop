@@ -335,6 +335,8 @@ namespace coop::game::items {
 
     void SetTest(const char* name) { std::strncpy(g_Test, name ? name : "", sizeof(g_Test) - 1); }
 
+    void WatchClock(s64 now) { WatchPause(now); }
+
     void Tick(s64 now) {
         WatchPause(now);
         RunTest(now);

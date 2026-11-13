@@ -357,6 +357,57 @@ SAVAGEWIND_ROMFS_OVERLAY=coop/romfs exec "$B/savagewind" extracted --play "$@"
 """
 
 
+def extract_for_recomp(tool, base, update, sw):
+    """Savage Wind Recomp reads the game from <folder>/extracted: exefs (the 1.9.0 code) and romfs (all the game's
+    files, the update applied). Made here from the dump when they aren't there yet."""
+    exefs, romfs = sw / "extracted" / "exefs", sw / "extracted" / "romfs"
+    if not (exefs / "main").is_file():
+        print("  the game's code (exefs)", flush=True)
+        r = subprocess.run(tool + [str(base), str(update), "exefs", str(exefs)])
+        if r.returncode != 0 or not (exefs / "main").is_file():
+            fail("couldn't read the game's code from the dump (see above).")
+    if not (romfs / "Pack" / "Bootup.pack").is_file():
+        free = shutil.disk_usage(sw).free
+        if free < 16 << 30:
+            fail(f"the game's files need about 15 GB in {sw}, and only {free >> 30} GB are free.")
+        print("  all of the game's files (romfs, about 14 GB: several minutes)", flush=True)
+        tmp = sw / "extracted" / "romfs.partial"
+        if tmp.exists():
+            shutil.rmtree(tmp)
+        r = subprocess.run(tool + [str(base), str(update), "extract-all", str(tmp)])
+        if r.returncode != 0 or not (tmp / "Pack" / "Bootup.pack").is_file():
+            fail("couldn't read the game's files from the dump (see above).")
+        if romfs.exists():
+            shutil.rmtree(romfs)
+        tmp.rename(romfs)
+
+
+def build_recomp(sw):
+    """Builds Savage Wind with the mod in its game code: `make gen` (the game's code as C, the mod's with it) and
+    `make`. Returns False when the build tools aren't there (the player is told how to run it)."""
+    jobs = str(os.cpu_count() or 4)
+    if WINDOWS:
+        bash = Path(r"C:\msys64\usr\bin\bash.exe")
+        if not bash.is_file():
+            return False
+        env = dict(os.environ, MSYSTEM="UCRT64", CHERE_INVOKING="1")
+        cmd = [str(bash), "-lc", f"make gen && make -j{jobs}"]
+    else:
+        if not shutil.which("make"):
+            return False
+        env = dict(os.environ)
+        if sys.platform == "darwin":
+            env["PATH"] = "/opt/homebrew/bin:" + env.get("PATH", "")
+            cmd = ["/bin/sh", "-c", f"make gen && make MAC_VULKAN=1 B=build-vk -j{jobs}"]
+        else:
+            cmd = ["/bin/sh", "-c", f"make gen && make -j{jobs}"]
+    r = subprocess.run(cmd, cwd=sw, env=env)
+    if r.returncode != 0:
+        fail("Savage Wind didn't build (the error is above). Copy the last 30 lines and share them; "
+             "docs/RECOMP.md says what to look at.")
+    return True
+
+
 def install_recomp(sw, deploy, romfs):
     """Savage Wind Recomp, built from the source that loads code mods (docs/RECOMP.md): the mod's code and its
     symbols go beside the game's own code, its game files in a folder the launcher script layers over the game's."""
@@ -365,8 +416,8 @@ def install_recomp(sw, deploy, romfs):
         fail(f"{sw} isn't the Savage Wind source that loads code mods (no tools/mod_add.py). See docs/RECOMP.md "
              "for which one to get.")
     if not (exefs / "main").is_file():
-        fail(f"{exefs} has no game code yet. Put your extracted game there first (exefs and romfs; Savage Wind's "
-             "README says how), then run this again.")
+        fail(f"{exefs} has no game code yet. Run this again with your base game and update files, which makes it, "
+             "or put your extracted game there (exefs and romfs).")
     manifest = deploy / "subsdk9.mod"
     if not manifest.is_file() or code_id(deploy) not in manifest.read_text().splitlines()[0]:
         fail("client/deploy/subsdk9.mod is missing or belongs to another build of the mod's code. Use a release "
@@ -408,7 +459,9 @@ def main():
     ap.add_argument("--no-ryujinx", action="store_true", default=bool(os.environ.get("NO_INSTALL")),
                     help="don't install into Ryujinx")
     ap.add_argument("--recomp", metavar="FOLDER", help="also put the mod into this Savage Wind Recomp source folder "
-                    "(docs/RECOMP.md). If its extracted/romfs is there, the two dump files aren't needed")
+                    "(docs/RECOMP.md), making its extracted game files from the dump if they aren't there, and "
+                    "build it. If its extracted/romfs is there, the two dump files aren't needed")
+    ap.add_argument("--no-build", action="store_true", help="with --recomp: don't build Savage Wind (make gen, make)")
     args = ap.parse_args()
 
     recomp = Path(args.recomp).expanduser().resolve() if args.recomp else None
@@ -446,6 +499,11 @@ def main():
     if from_folder is None:
         say("Reading your game dump (the first time takes a few minutes)")
         extract_files(tool, base, update, gamefiles)
+        if recomp:
+            if not (recomp / "tools" / "mod_add.py").is_file():
+                fail(f"{recomp} isn't the Savage Wind source that loads code mods (no tools/mod_add.py). See "
+                     "docs/RECOMP.md for which one to get.")
+            extract_for_recomp(tool, base, update, recomp)
     else:
         say(f"Copying the files it needs from {from_folder}")
         copy_game_files(from_folder, gamefiles)
@@ -472,9 +530,17 @@ def main():
     if args.switch:
         say("Writing the Switch files")
         configs.append(install_switch(Path(args.switch).expanduser().resolve(), deploy, romfs))
+    built = False
     if recomp:
         say("Putting the mod into Savage Wind Recomp")
         configs.append(install_recomp(recomp, deploy, romfs))
+        if not args.no_build:
+            say("Building Savage Wind with the mod in it (the first time takes 15-20 minutes)")
+            built = build_recomp(recomp)
+            if built:
+                print("ok")
+            else:
+                print("The build tools weren't found, so it wasn't built (see the next steps below).")
 
     print("\nDone. Next:")
     for c in configs:
@@ -483,12 +549,12 @@ def main():
         print("  - In Ryujinx: Options > Settings > Network > turn on Guest Internet Access.")
     if args.switch:
         print("  - Copy the `atmosphere` folder onto your Switch's SD card (merge it with the one there).")
-    if recomp:
+    if recomp and not built:
         build = "make gen, then make -j" if WINDOWS or not sys.platform == "darwin" else \
                 "make gen, then make MAC_VULKAN=1 B=build-vk -j"
         where = "an MSYS2 UCRT64 shell" if WINDOWS else "a terminal"
         print(f"  - Build Savage Wind's game code with the mod in it: in {where} in\n      {recomp}\n"
-              f"    run: {build}   (again after every update of the mod)")
+              f"    run: {build}   (or run this setup again; it builds when the tools are there)")
         print(f"  - Start the game with {'play-coop.cmd' if WINDOWS else './play-coop.sh'} in that folder. "
               "More: docs/RECOMP.md")
     if relay:

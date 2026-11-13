@@ -75,25 +75,26 @@ With the mod installed, the game plays from a **separate copy** of your saves.
 
 | Do this | And this happens |
 |---|---|
-| **Hold the left stick click for 1.5 seconds** | You warp to your partner and land on the spot where they stand. A quick tap still crouches. With several partners, each warp goes to the next one. |
+| **Hold the left stick click for 1.5 seconds, standing still** | You warp to your partner and land on the spot where they stand. A quick tap still crouches. With several partners, each warp goes to the next one. |
+| **Tap the left stick click twice** | A banner for each partner: their hearts, and how far away they are (or that they're down, or in a shrine). |
 | **Drop or throw a weapon, bow or shield next to your partner** | It leaves your world and lands at their feet. One with a bonus (Attack Up and so on) goes straight into their inventory, bonus and durability included; if their inventory is full it lands at their feet without the bonus. |
 | **Inventory → pick a material or food → Hold → close the menu → put it down (A) next to your partner** | They get it. A held stack goes over one item at a time. |
 | **Eat while standing next to your partner** | They're healed by the same amount. |
 | **Stand next to a downed partner for a moment** | They get back up with 3 hearts. |
 
-Warping only works when you're both outside, or both in the same shrine. Far-away partners are reached in hops through the sky, a few seconds per kilometre; you lose no hearts on the way or on landing. Over several kilometres a warp can get stuck (see [If something goes wrong](#if-something-goes-wrong)): fast-traveling near your partner first is the safe way. You can't warp while riding.
+A partner who is far away (1.5 km and more) is reached the way fast travel works: a loading screen takes you to the shrine or tower nearest them, and a short warp does the rest. A partner in a shrine is reached through a loading screen to that shrine's entrance. Nearer partners are reached at once, in hops through the sky if need be; you lose no hearts on the way or on landing. You can't warp while riding, and you can't follow a partner into a Divine Beast.
 
 ## What you share
 
 - **Seeing each other.** Your partner is a second Link in your world: their armor, their weapons, what they're doing (running, climbing, swimming, gliding, fighting, riding), and a marker on your map.
 - **Shrines, towers and Koroks.** When one of you clears a shrine, you all get the Spirit Orb. A tower one of you climbs reveals the map for everyone. A Korok found by one gives everyone the seed. Someone who joins later is caught up on everything already done.
 - **Divine Beasts**, but only together: the Champion's ability goes to the players who are inside the beast when it's freed. (If you weren't there, you get a banner, and your own beast is still waiting for you.)
-- **Enemies.** Enemies that are part of the world stand in the same place for everyone, take damage from everyone, and die for everyone.
+- **Enemies.** Enemies that are part of the world stand in the same place for everyone, take damage from everyone, and die for everyone. Each one fights the player nearest to it, and everyone sees the same swings, shots and stumbles. It turns to another player only when that player is clearly closer, or when the one it was fighting goes down.
 - **Map stamps.** A stamp you put on your map shows on everyone's map: mark where to meet.
 - **Time, weather and the Blood Moon**, from the host.
 - **Meals**, when you eat next to each other.
 
-Banners at the top of the screen tell you what's going on: who joined or left, what you were given, when your partner is low on hearts, when they travel or enter a shrine.
+Banners at the top of the screen tell you what's going on: who joined or left, what you were given, when your partner is low on hearts, when they travel or enter a shrine, and how they're doing when you meet up again.
 
 ## What you don't share
 
@@ -107,6 +108,7 @@ Banners at the top of the screen tell you what's going on: who joined or left, w
 If a hit would kill you and you have no fairy and no Mipha's Grace, you don't get a game over while a partner is in the same area. You **go down** instead:
 
 - You're stuck where you fell on a quarter of a heart, and your partner sees you collapse and gets a banner with how far away you are.
+- The enemies around you stop fighting you: they turn on a partner who is close, or stand still.
 - They have **30 seconds** to reach you (warping counts). Standing next to you gets you up with 3 hearts. A partner who is down too can't get you up.
 - If nobody comes, you wake up beside your nearest partner with 1 heart.
 - This can happen once every 2 minutes. A second lethal hit inside that time is a normal game over.
@@ -117,11 +119,10 @@ A player who's still on the Great Plateau (no paraglider yet) doesn't receive an
 
 ## Things that aren't right yet
 
-- Enemies stand in the same place for everyone, but their attacks aren't matched: your partner's Bokoblin may swing at a different moment than yours.
-- Enemies keep hitting a downed player (it can't finish them).
+- An enemy only fights one player at a time (the nearest). If you're the other one, it ignores you until you're clearly closer than your partner, though its swings at your partner can still hit you.
+- Enemies that aren't part of the map (Blood Moon respawns, ones that drop from the sky) aren't shared at all.
 - Bombs, Stasis, Magnesis and Cryonis only happen in your own world.
 - Your partner's horse always looks the same brown.
-- A traded weapon without a bonus arrives at full durability, however worn it was.
 - Cooked dishes can't be handed over (eat next to your partner instead), and food effects other than healing aren't shared.
 - Big enemies such as a Stone Talus may not move the same way for everyone.
 
@@ -138,5 +139,7 @@ The full list is in [REMAINING.md](REMAINING.md).
 | The game says it isn't 1.9.0 (in Ryujinx's log) | Install the 1.9.0 update in Ryujinx. |
 | Two copies of the game on one Mac hang on the loading screen | A Ryujinx quirk: pause the first copy (in Ryujinx: Actions → Pause Emulation) while the second one loads. |
 | A game on a Mac stops moving (0 FPS) while another window lies over it | Ryujinx stops a game whose window is completely covered. Keep at least a part of every game window visible. |
-| "Warp stopped: the area didn't load", and Link hangs in the sky with the loading icon | A far warp (several kilometres) got ahead of what the game can load. It doesn't recover by itself: load your last save from the menu if it still opens, or restart the game. Shorter warps are safe; for a far partner, fast-travel near them first. |
+| "Warp stopped: the area didn't load", and Link hangs in the sky with the loading icon | A warp in hops got ahead of what the game can load. It doesn't recover by itself: load your last save from the menu if it still opens, or restart the game. It shouldn't happen any more for far partners (they're reached through a loading screen); if the log says there's no `travel-points.txt`, run the setup again. |
+| "Travel is stuck: please restart the game", with the loading screen still up | In Ryujinx about one travel in twelve never finishes loading. Close the game and start it again; your last save is as it was. |
+| "Travel to ... didn't finish" | The game didn't start the loading screen within 90 seconds (it won't right after a save has loaded, or during a scene). Try the warp again. |
 | You want your co-op saves from an earlier day | They're in BotW's save folder under `coop_backups/1`, `2` and `3`. Right-click the game in Ryujinx → Open User Save Directory. Copy one over the `coop` folder while the game is closed. |

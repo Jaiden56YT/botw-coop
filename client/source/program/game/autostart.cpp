@@ -46,6 +46,11 @@ namespace coop::game {
         /* The left stick click is held back from the game while it's down: a
            tap (shorter than TapMs) is passed on when it's released, so Link
            still crouches; a long hold is ours (warp) and the game never sees it. */
+        constexpr s64 DoubleTapMs = 450;
+        constexpr s32 StickMoved = 20000; /* of 32767 */
+        std::atomic<s64> g_LsLastTap{-100000};
+        std::atomic<u32> g_LsDoubleTaps{0};
+        std::atomic<bool> g_LsMoved{false};
         constexpr u64 LStick = 1ull << 4;
         constexpr s64 TapMs = 350;
         std::atomic<int> g_LsFrom{-1};
@@ -99,13 +104,21 @@ namespace coop::game {
                 if (down && from < 0) {
                     g_LsSince.store(now);
                     g_LsFrom.store(which);
+                    g_LsMoved.store(false);
                 } else if (from == which && !down) {
                     if (now - g_LsSince.load() < TapMs) {
                         g_LsTapUntil.store(now + 120);
                         g_LsTaps.fetch_add(1, std::memory_order_relaxed);
+                        /* Two taps in a row: "how are my partners?" (status.cpp) */
+                        if (now - g_LsLastTap.load() < DoubleTapMs) g_LsDoubleTaps.fetch_add(1, std::memory_order_relaxed);
+                        g_LsLastTap.store(now);
                     }
                     g_LsFrom.store(-1);
                 }
+                /* Held while running isn't the warp gesture (it's someone's thumb pressing hard). */
+                if (down && (out[0].stick_l[0] > StickMoved || out[0].stick_l[0] < -StickMoved || out[0].stick_l[1] > StickMoved ||
+                             out[0].stick_l[1] < -StickMoved))
+                    g_LsMoved.store(true);
                 if (g_LsFrom.load(std::memory_order_relaxed) >= 0)
                     for (int i = 0; i < count; i++) out[i].buttons &= ~LStick;
                 if (now < g_LsTapUntil.load(std::memory_order_relaxed))
@@ -161,9 +174,10 @@ namespace coop::game {
     }
 
     u32 StickClickTaps() { return g_LsTaps.load(std::memory_order_relaxed); }
+    u32 StickClickDoubleTaps() { return g_LsDoubleTaps.load(std::memory_order_relaxed); }
 
     s64 StickClickHeldMs() {
-        if (g_LsFrom.load(std::memory_order_relaxed) < 0) return 0;
+        if (g_LsFrom.load(std::memory_order_relaxed) < 0 || g_LsMoved.load(std::memory_order_relaxed)) return 0;
         return NowMs() - g_LsSince.load(std::memory_order_relaxed);
     }
 

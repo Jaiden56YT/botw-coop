@@ -24,6 +24,8 @@ namespace coop::game {
     /* How long the left stick click has been held (0 = not held). The game
        only gets it as a tap on release, if it was held under 350 ms. */
     s64 StickClickHeldMs();
+    /* How many times the stick click was tapped twice in a row so far. */
+    u32 StickClickDoubleTaps();
     /* How many short taps were passed on to the game (debug). */
     u32 StickClickTaps();
 

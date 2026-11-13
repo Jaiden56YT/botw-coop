@@ -133,6 +133,12 @@ namespace coop::game {
 
     u32 OverworldArea() { return Crc32("MainField", nullptr); }
 
+    u32 AreaOf(const char* map_type, const char* map_name) {
+        if (std::strcmp(map_type, "MainField") == 0) return OverworldArea();
+        u32 h = Crc32(map_type, map_name);
+        return h ? h : 1;
+    }
+
     u32 LocalArea() {
         const char* type = LocalMapType();
         if (!type[0]) return 0;

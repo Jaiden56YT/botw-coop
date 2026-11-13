@@ -23,6 +23,8 @@ namespace coop::game {
     /* Link's hearts in quarter hearts (life, max life). Zeros if unknown. */
     void LocalLife(u16* life, u16* max_life);
     u32 OverworldArea();
+    /* The area value (as LocalArea gives it) of a stage, e.g. ("CDungeon", "Dungeon045"). */
+    u32 AreaOf(const char* map_type, const char* map_name);
     /* Debug: the stage strings behind LocalArea. */
     const char* LocalMapType();
     const char* LocalMapName();

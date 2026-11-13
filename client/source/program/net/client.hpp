@@ -61,9 +61,11 @@ namespace coop::net {
 
     /* Where the enemies we're closest to are (game::enemies). Replaces any batch not sent yet. */
     void SendEnemyPoses(u32 area, const game::enemies::Pose* poses, int count);
+    void SendEnemyAnims(u32 area, const game::enemies::AnimEvent* events, int count);
 
     /* Tells the room we went down and were revived. Any thread. */
     void SendRevived();
+    void SendCall(const float* pos); /* a whistle: partners are told where it came from */
 
     /* game::map: the stamps on our own map (replaces the last list sent). */
     void SendStamps(const SharedStamp* stamps, int count);

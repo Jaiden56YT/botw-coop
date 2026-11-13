@@ -24,6 +24,7 @@
 #include "notify.hpp"
 #include "status.hpp"
 #include "research.hpp"
+#include "console.hpp"
 #include "enemies.hpp"
 #include "meals.hpp"
 #include "weapons.hpp"
@@ -165,7 +166,8 @@ namespace coop::game {
 
         s64 g_NoSpawnUntil = 0;
 
-        uintptr_t SpawnNamed(const char* name, const float (&pos)[3], float rot_y, const char* model_user = nullptr) {
+        uintptr_t SpawnNamed(const char* name, const float (&pos)[3], float rot_y, const char* model_user = nullptr,
+                             const SpawnParam* extra = nullptr, int nextra = 0) {
             if (!SafeToSpawn(NowMs())) return 0;
             uintptr_t creator = ActorCreator();
             uintptr_t heap_slot = Read<uintptr_t>(Base() + offsets::Got_SpawnHeapOwner);
@@ -184,6 +186,7 @@ namespace coop::game {
             static const char KeyModelUser[] = "@MU";
             if (model_user && model_user[0])
                 pack.Add(KeyModelUser, ParamTypeString, model_user, std::strlen(model_user) + 1);
+            for (int i = 0; i < nextra; i++) pack.Add(extra[i].key, extra[i].type, &extra[i].i, 4);
 
             auto create = reinterpret_cast<CreateActorFn>(Base() + offsets::ActorCreator_CreateActor);
             uintptr_t actor = create(creator, name, heap, &pack, false, false);
@@ -847,6 +850,9 @@ namespace coop::game {
     }
 
     uintptr_t SpawnActor(const char* name, const float (&pos)[3], float rot_y) { return SpawnNamed(name, pos, rot_y); }
+    uintptr_t SpawnActorWith(const char* name, const float (&pos)[3], float rot_y, const SpawnParam* params, int count) {
+        return SpawnNamed(name, pos, rot_y, nullptr, params, count);
+    }
 
     /* Not in a menu or a loading screen, and not while a warp is loading the
        map around Link: with the world kept running there (it isn't paused,
@@ -873,6 +879,17 @@ namespace coop::game {
 
     HOOK_DEFINE_TRAMPOLINE(StartAnimationHook) {
         static void Callback(uintptr_t as_list, float a, float b, const SafeString& name, int target, int bank, bool flag) {
+            /* A partner's enemy takes its sequences from its owner. */
+            if (name.str) {
+                console::OnStartAnimation(as_list, name.str, target, a, b, bank, flag);
+                int what = enemies::OnStartAnimation(as_list, a, b, name.str, target, bank, flag);
+                if (what == 1) return;
+                if (what == 2) {
+                    SafeString wait{name.vtable, "Wait"};
+                    Orig(as_list, -1.0f, -1.0f, wait, 0, 0, true);
+                    return;
+                }
+            }
             /* Lying down, waiting for a partner: Link's own state machine
                keeps asking for its standing sequences (it noticed ours and
                put WaitAttention back within a frame). Those are dropped
@@ -894,6 +911,8 @@ namespace coop::game {
             }
             Orig(as_list, a, b, name, target, bank, flag);
             if (!name.str || as_list != LocalPlayerASList()) return;
+            /* A whistle is the face sequence "FaceHorseCall" (slot 3); nothing starts on the body. */
+            if (target == 3 && std::strcmp(name.str, "FaceHorseCall") == 0) status::OnLocalWhistle();
             if (target != 0 && g_LogPlayerAS.load(std::memory_order_relaxed))
                 Logging.Log("[coop] player AS slot %d '%s'", target, name.str);
             /* Attacks, bow, throw, guard: any slot. */
@@ -925,6 +944,14 @@ namespace coop::game {
                 if (w == actor) return true;
         }
         return false;
+    }
+
+    bool StartAS(uintptr_t as_list, float a, float b, const char* name, int target, int bank, bool flag) {
+        uintptr_t slot = Read<uintptr_t>(Base() + offsets::Got_SafeStringVtableBase);
+        SafeString str{slot + 0x10, name};
+        auto start = reinterpret_cast<bool (*)(uintptr_t, float, float, const SafeString&, int, int, bool)>(
+            Base() + offsets::ASList_StartAnimation);
+        return start(as_list, a, b, str, target, bank, flag);
     }
 
     bool PlayLocalAS(const char* name) {
@@ -992,6 +1019,17 @@ namespace coop::game {
                on the same thread. Only one tick runs at a time; nobody waits. */
             bool expected = false;
             if (g_Configured && g_InTick.compare_exchange_strong(expected, true)) {
+                /* A stage change of ours is loading. Link's actor stays through it, so unlike a load the game
+                   starts itself (no player actor: every part of the mod stands back), the mod would carry on with
+                   actors the game is tearing down and creating. Only what the travel itself needs runs. */
+                if (warp::Traveling()) {
+                    items::WatchClock(NowMs());
+                    warp::Tick(NowMs());
+                    notify::Tick(NowMs());
+                    enemies::Stop();
+                    g_InTick.store(false);
+                    return result;
+                }
                 Tick();
                 WorldTick(NowMs());
                 progress::Tick();
@@ -1008,6 +1046,7 @@ namespace coop::game {
                 research::Tick(NowMs());
                 enemies::Tick(NowMs());
                 meals::Tick(NowMs());
+                console::Tick(NowMs());
                 LogMountedOffset(NowMs());
                 KeyScriptTick(NowMs());
                 g_InTick.store(false);

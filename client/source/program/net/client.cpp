@@ -10,6 +10,7 @@
 #include <program/filelog.hpp>
 
 #include "../config.hpp"
+#include "../game/status.hpp"
 #include "../game/player.hpp"
 #include "../game/ghost.hpp"
 #include "../game/autostart.hpp"
@@ -67,8 +68,14 @@ namespace coop::net {
         game::enemies::Pose g_EnemyPosOut[game::enemies::MaxPerMessage];
         int g_EnemyPosCount = 0;
         u32 g_EnemyPosArea = 0;
+        constexpr int EnemyAnimQueue = 64;
+        game::enemies::AnimEvent g_EnemyAnimOut[EnemyAnimQueue];
+        int g_EnemyAnimCount = 0;
+        u32 g_EnemyAnimArea = 0;
 
         bool g_RevivedPending = false;
+        bool g_CallPending = false;
+        float g_CallPos[3];
         u32 g_HealPending = 0;
         bool g_RejectShown = false;
         SharedStamp g_StampsOut[MaxSharedStamps];
@@ -328,6 +335,29 @@ namespace coop::net {
                     game::enemies::OnRemote(from, area, poses, n);
                     return true;
                 }
+                case MsgType::EnemyAnim: {
+                    u8 from = r.Get<u8>();
+                    u32 area = r.Get<u32>();
+                    u8 count = r.Get<u8>();
+                    game::enemies::AnimEvent ev[game::enemies::MaxAnimsPerMessage];
+                    int n = 0;
+                    for (u8 i = 0; i < count && r.Ok(); i++) {
+                        game::enemies::AnimEvent e{};
+                        e.hash = r.Get<u32>();
+                        e.slot = r.Get<s8>();
+                        e.bank = r.Get<s8>();
+                        e.flag = r.Get<u8>();
+                        e.a = r.Get<float>();
+                        e.b = r.Get<float>();
+                        std::string_view name = r.Str();
+                        size_t len = name.size() < sizeof(e.name) - 1 ? name.size() : sizeof(e.name) - 1;
+                        std::memcpy(e.name, name.data(), len);
+                        if (n < game::enemies::MaxAnimsPerMessage) ev[n++] = e;
+                    }
+                    if (!r.Ok()) return false;
+                    game::enemies::OnRemoteAnims(from, area, ev, n);
+                    return true;
+                }
                 case MsgType::Gear: {
                     u8 from = r.Get<u8>();
                     std::string_view parts[3];
@@ -424,6 +454,14 @@ namespace coop::net {
                     game::revive::OnPartnerRevived(from);
                     return true;
                 }
+                case MsgType::Call: {
+                    u8 from = r.Get<u8>();
+                    float pos[3];
+                    for (float& f : pos) f = r.Get<float>();
+                    if (!r.Ok()) return false;
+                    game::status::OnPartnerCall(from, pos);
+                    return true;
+                }
                 case MsgType::Ping: {
                     Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Pong);
                     w.U64(r.Get<u64>());
@@ -503,10 +541,15 @@ namespace coop::net {
             int nflags = 0;
             EnemyLifeMsg enemies[64];
             int nenemies = 0;
+            game::enemies::AnimEvent enemy_anims[EnemyAnimQueue];
+            int nenemy_anims = 0;
+            u32 enemy_anim_area = 0;
             game::enemies::Pose enemy_pos[game::enemies::MaxPerMessage];
             int nenemy_pos = 0;
             u32 enemy_pos_area = 0;
             bool send_revived = false;
+            bool send_call = false;
+            float call_pos[3] = {};
             u16 send_heal = 0;
             DownedOut downed[4];
             int ndowned = 0;
@@ -576,12 +619,23 @@ namespace coop::net {
                     send_revived = true;
                     g_RevivedPending = false;
                 }
+                if (g_CallPending && g_Connected) {
+                    send_call = true;
+                    std::memcpy(call_pos, g_CallPos, sizeof(call_pos));
+                }
+                g_CallPending = false;
                 if (g_EnemyPosCount && g_Connected) {
                     std::memcpy(enemy_pos, g_EnemyPosOut, g_EnemyPosCount * sizeof(*enemy_pos));
                     nenemy_pos = g_EnemyPosCount;
                     enemy_pos_area = g_EnemyPosArea;
                 }
                 g_EnemyPosCount = 0;
+                if (g_EnemyAnimCount && g_Connected) {
+                    std::memcpy(enemy_anims, g_EnemyAnimOut, g_EnemyAnimCount * sizeof(*enemy_anims));
+                    nenemy_anims = g_EnemyAnimCount;
+                    enemy_anim_area = g_EnemyAnimArea;
+                }
+                g_EnemyAnimCount = 0;
                 while (g_EnemyCount > 0 && nenemies < 64 && g_Connected) {
                     enemies[nenemies++] = g_EnemyQueue[g_EnemyHead];
                     g_EnemyHead = (g_EnemyHead + 1) % EnemyQueueSize;
@@ -651,6 +705,11 @@ namespace coop::net {
                 Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Revived);
                 if (!SendMsg(w)) return false;
             }
+            if (send_call) {
+                Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::Call);
+                w.Bytes(call_pos, 12);
+                if (!SendMsg(w)) return false;
+            }
             if (nenemy_pos) {
                 Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::EnemyPos);
                 w.Bytes(&enemy_pos_area, 4);
@@ -659,6 +718,23 @@ namespace coop::net {
                     w.Bytes(&enemy_pos[i].hash, 4);
                     w.Bytes(enemy_pos[i].pos, 12);
                     w.Bytes(&enemy_pos[i].rot_y, 4);
+                }
+                if (!SendMsg(w)) return false;
+            }
+            for (int at = 0; at < nenemy_anims; at += game::enemies::MaxAnimsPerMessage) {
+                int n = nenemy_anims - at < game::enemies::MaxAnimsPerMessage ? nenemy_anims - at : game::enemies::MaxAnimsPerMessage;
+                Writer w(g_SendBuf, sizeof(g_SendBuf), MsgType::EnemyAnim);
+                w.Bytes(&enemy_anim_area, 4);
+                w.U8(static_cast<u8>(n));
+                for (int i = at; i < at + n; i++) {
+                    const auto& e = enemy_anims[i];
+                    w.Bytes(&e.hash, 4);
+                    w.Bytes(&e.slot, 1);
+                    w.Bytes(&e.bank, 1);
+                    w.U8(e.flag);
+                    w.Bytes(&e.a, 4);
+                    w.Bytes(&e.b, 4);
+                    w.Str(e.name);
                 }
                 if (!SendMsg(w)) return false;
             }
@@ -778,6 +854,8 @@ namespace coop::net {
                 game::meals::SetTestLife(g_Config.test_heal);
                 game::warp::SetTestFollow(g_Config.test_follow, g_Config.test_leader);
                 game::warp::SetDirect(g_Config.warp_direct);
+                game::warp::SetTravel(g_Config.warp_travel);
+                game::enemies::SetAnimSync(g_Config.enemy_anims, g_Config.test_enemy_as, g_Config.test_enemy_mute);
                 game::weapons::SetTest(g_Config.test_bind);
                 game::items::SetTest(g_Config.test_drop);
                 game::SetKeyScript(g_Config.test_keys);
@@ -909,6 +987,12 @@ namespace coop::net {
         g_HealPending += quarters;
     }
 
+    void SendCall(const float* pos) {
+        ScopedLock lock;
+        g_CallPending = true;
+        std::memcpy(g_CallPos, pos, sizeof(g_CallPos));
+    }
+
     void SendRevived() {
         ScopedLock lock;
         g_RevivedPending = true;
@@ -920,6 +1004,13 @@ namespace coop::net {
         std::memcpy(g_EnemyPosOut, poses, count * sizeof(*poses));
         g_EnemyPosCount = count;
         g_EnemyPosArea = area;
+    }
+
+    void SendEnemyAnims(u32 area, const game::enemies::AnimEvent* events, int count) {
+        ScopedLock lock;
+        if (area != g_EnemyAnimArea) g_EnemyAnimCount = 0;
+        g_EnemyAnimArea = area;
+        for (int i = 0; i < count && g_EnemyAnimCount < EnemyAnimQueue; i++) g_EnemyAnimOut[g_EnemyAnimCount++] = events[i];
     }
 
     void SendEnemyLife(u32 area, u32 hash_id, s32 life) {

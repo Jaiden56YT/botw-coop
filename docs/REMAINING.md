@@ -57,8 +57,11 @@ Several features were only tested against `tools/fakehost` (a scripted fake part
 
 ## 2. Combat
 
-### 2.1 Enemy animations and attacks (P1, L, ?)
-**Today:** only where an enemy is and which way it faces is shared. Each game still runs its own copy of the enemy's AI, so in your partner's game a Bokoblin can swing at a different moment, or at nothing.
+### 2.1 Enemy animations and attacks (P1, L, ?) — first version in, needs playing
+**Done (2026-11-12):** an enemy's owner sends every sequence its AI starts (`Attack`, `Guard`, `ArrowShoot`, `Run`...), and the other games play it on their copy and drop what their own copy's AI asks for (`enemy_anims = 2`, the default; `enemies.cpp`). A copy whose requests are dropped doesn't attack by itself: its AI waits for a sequence that never plays, so there are no hits from an enemy that isn't visibly swinging (checked: 70 s in a Bokoblin camp with every request dropped, no hearts lost). Ownership is sticky now: an enemy belongs to the world where it's fighting (its AI there asked for an attack, guard, aim or "noticed" sequence in the last seconds); when that's so in both worlds or in neither, it stays with its owner until another player is nearer than 60% of the owner's distance less 1 m. A downed player owns nothing. What happens *to* an enemy (a hit, a knock-down: `SmallDamage`, `BlownOff`, `DownWait`, `DownRecover`) is played where it happened and sent to every other game. Checked between two Savage Wind copies and with a Ryujinx player watching: sequences arrive and play, the watcher's enemies fight the owner's puppet, hits by the watcher stagger the enemy in both games, kills count for both.
+**Not checked:** how it looks side by side on two screens (the pictures taken by script couldn't be lined up), enemies other than Bokoblins (which sequences count as "what happens to it" was decided from the names in all 200 enemy packs, not by trying them), the "belongs where it fights" rule with two players at the same distance, and arrows: a copy plays `ArrowShoot`, but whether an arrow leaves its bow there wasn't seen.
+**Left:** the copies' AI still runs (it's only starved of its sequences), so an enemy that changes owner picks up from wherever its own AI was. The non-owner is never the target; "aggro" doesn't move to who hits hardest.
+**Before:** only where an enemy is and which way it faces was shared. Each game ran its own copy of the enemy's AI, so in your partner's game a Bokoblin could swing at a different moment, or at nothing.
 **Wanted:** the owner's enemy is the real one, and everyone else's copy is a puppet that plays the same animations: attack, block, stagger, get knocked down.
 **How:**
 - Send the enemy's current animation the same way the player puppet does (it reads the `ASList` sequence names, see `anim.cpp`), and play it on the copies.
@@ -70,6 +73,7 @@ Several features were only tested against `tools/fakehost` (a scripted fake part
 **How:** send the kind of hit along with the new health, and apply the effect on the owner's copy. That needs the game's damage call, with its attack info, found in 1.9.0.
 
 ### 2.3 Rune and physics objects (P2, L, ?)
+**Tried (2026-11-12), not solved:** a `RemoteBomb` / `RemoteBombCube` created by the mod exists and glows but shows no model (the same for the paraglider, `PlayerStole2`): these "player item" actors are shown by the player's own rune code. An `Explode` actor created without parameters does nothing; the game creates it with `AttackPower` (int), `ScaleTime` (float) and `Range` (float) (see the reverse-engineering notes), which is the next thing to try for showing a partner's blast.
 **Wanted:**
 - Stasis on an enemy or object shows for everyone.
 - Bombs, Magnesis and Cryonis pillars exist in both worlds.
@@ -96,7 +100,7 @@ The design wants config settings for enemy health, enemy damage and stun time. F
 
 ### 3.1 A real "down" look (P2, M) — partly done
 **Done:** partners see the downed player's puppet collapse and lie on the ground (`Nml_Die`), and the downed player's buttons and left stick are off.
-**Still wrong:** your own Link is told to sit down (`SitDownSt`), but an enemy that keeps hitting him keeps him standing. And enemies do keep hitting a downed player, which looks bad even though it can't kill. Wanted: enemies lose interest in a downed player (find how the game hides Link from enemy senses, e.g. the stealth or "no target" state used in cutscenes).
+**Done (2026-11-12):** enemies leave a downed player alone. A downed player owns no enemies (2.1): the ones around turn to a partner who is near enough to own them, and the rest stand in their idle pose, because every sequence their AI asks for is swapped for `Wait`. Checked alone in a Bokoblin camp: down for 30 s among three Bokoblins, no further hit, then the respawn beside the partner.
 **Before:** a downed player just stood still, held in place.
 **Wanted:** Link on the ground or crawling, and the puppet showing that too.
 **How:** play one of Link's own lying-down or damaged sequences while down (look through `Player_Animation.sbfres` for a suitable clip), and send a "down" movement state so the puppet plays it as well.
@@ -134,7 +138,7 @@ The design wants config settings for enemy health, enemy damage and stun time. F
 **Options:**
 - **(a) Draw text ourselves:** hook the render loop and draw with the game's font. That's hard: it needs the NVN graphics API, the font, and the camera.
 - **(b) Reuse an existing marker:** something like the enemy "noticed you" marker, or a map pin. No name, but it shows where they are.
-- **(c) Put the name in the banner** when you get close ("FakeA, 4 hearts"). Easy, and the banner already exists.
+- **(c) Put the name in the banner** when you get close ("FakeA, 4 hearts"). **Done (2026-11-12):** "Recomp is with you (21.75 hearts of 30)" when a partner who was out of sight (60 m, or another area) comes within 20 m, at most once a minute; and two taps on the left stick click show every partner's hearts and distance at any time.
 
 ### 4.2 Hearts always on screen (P2, M, ?)
 **Today:** a banner warns when a partner is low.
@@ -171,17 +175,20 @@ The puppet shows movement, attacks, the bow, throws and the shield. It doesn't s
 
 ### 5.1 Travel together (P2, M, ?)
 **Design:** fast travel is a vote. When one player travels, the other gets "Travel together / Stay".
-**Today:** a banner says your partner traveled and that holding L3 follows them. Following means warping across the map in hops, which takes about 1 s per km in the sky.
+**Today:** a banner says your partner traveled and that holding L3 follows them. Following a far partner now goes through the game's own loading screen to the travel point nearest them (5.3), then a short warp.
 **How:**
 - Ask with the banner, and answer with a button.
 - The best version would use the game's own fast travel to the same named place. That runs through the map screen, an event and a loading screen, and is the stuck point recorded in `docs/reverse-engineering.md` under Moving Link (warp).
 
-### 5.2 Warp across areas (P2, L, ?)
-**Today:** warping only works inside the same area: both in the overworld, or both in the same shrine.
+### 5.2 Warp across areas (P2, L, ?) — code in, not tried
+**2026-11-12:** the game's own stage change is found (5.3), and a warp to a partner in a shrine now asks for that shrine's stage (`CDungeon/DungeonNNN`, start position `Entrance_1`), then warps to them inside. A warp from a shrine to a partner outside goes to the travel point nearest them. **Neither has been run yet.** Divine Beasts and other stages aren't covered (no name is worked out for them).
+**Before:** warping only worked inside the same area: both in the overworld, or both in the same shrine.
 **Wanted:** warp into the shrine or Divine Beast your partner is in, or back out.
 **How:** that needs a stage change: loading the shrine's map and placing Link at its entrance. No free-position stage-change call has been found yet. Shrine entrances are named start points, which might work with the same event mechanism fast travel uses.
 
-### 5.3 A long warp that always arrives (P1, L, ?)
+### 5.3 A long warp that always arrives (P1, L, ?) — the game's own stage change is in
+**2026-11-12:** found and used. `main+0x12082e0` is the stage change the game's events call with a stage and a start-position name; the 138 overworld fast-travel points (shrines, towers, the two labs and the Shrine of Resurrection: name and place) come from the player's own map files (`travel-points.txt`, written by the setup). A warp to a partner more than 1.5 km away now asks for the stage change to the point nearest them, waits for the loading screen to finish, and warps the rest of the way (`warp_travel`, on by default; `warp.cpp`). Tried in Ryujinx, one travel per fresh start with a stand-in partner (`tools/fakehost`): with the request made from the game's main thread, 11 of 12 arrived, the loading screen taking 12 to 35 s; the 12th stayed on the loading screen. Made from whichever thread ran the mod's tick, 3 of 6 stayed on it. One more stuck while a Savage Wind copy ran on the same Mac, and asking again didn't free it: the mod now asks once more after 60 s, then says "Travel is stuck: please restart the game". In Savage Wind Recomp: 4 of 4 (10 to 17 s), and into a shrine and back out again (15 and 17 s). Not run on a Switch.
+**Also left:** why one load in about twelve never finishes in Ryujinx (the world runs, about 110 actors are made, then nothing; the game isn't asking about the ground either). A stage change asked for during a scene, a shop or a talk hasn't been tried and may well break it (the hold only checks that Link exists and isn't riding). It uses travel points whether or not the player has found them. The first seconds after a save loads, the game ignores the request; the mod asks again every 10 s, up to five times.
 **The problem (2026-11-11):** in Ryujinx, warps of 3 to 6 km froze in the sky more often than not: "Warp stopped: the area didn't load", Link hanging at 1,100 m with the loading icon, for good. The released build does it too. It went unnoticed because the long test warps all ran in the first seconds after a save loaded, when the game doesn't yet check the ground. In Savage Wind Recomp the same warps arrive. A Switch hasn't been tried over that distance.
 **Tried:** slower hops; going back to the last hop that loaded; telling the game the ground is ready so the world keeps running (the hook is in, `warp_direct`); one jump with Link held at the landing spot. The last one is reliable in the recomp and works about half the time in Ryujinx. Details in the reverse-engineering notes under "Why far warps freeze".
 **The real fix:** the game's own stage change to a free position (what fast travel and leaving a shrine do, with a loading screen). Until then: a failed far warp should at least put Link back on the ground where he started instead of leaving him in the sky.
@@ -252,7 +259,7 @@ The puppet shows movement, attacks, the bow, throws and the shield. It doesn't s
 ### 7.3 Weapons keep their bonuses (P2, M) — done
 **Done:** the inventory list is read (`pouch.cpp`; same layout as the 1.5.0 decomp, checked at runtime), a weapon's bonus and durability are noted when it leaves the inventory and sent with the gift, and a weapon with a bonus goes into the partner's inventory with `itemGet` (whose count argument is the durability for a weapon). Checked between two real games and in the inventory screen.
 **Left:**
-- A weapon **without** a bonus still lands at the partner's feet as a fresh actor, so it arrives at full durability. (Putting every weapon straight into the inventory would fix that but loses the "it lands at your feet" feel, and a full inventory needs the ground anyway.)
+- **Done, half checked:** a weapon without a bonus lands at the partner's feet as a fresh actor, and its wear is now written to that actor (a weapon actor's life is its durability, in the inventory's units). Seen: the new actor read 8000 for a weapon sent with 8000. Not seen: a worn weapon arriving worn.
 - With a full inventory the bonus is lost (the banner says so). Better: keep the bonus pending and apply it when that weapon is picked up later.
 - Durability set through `itemGet` isn't re-checked after a save and reload.
 - A dropped weapon sits in the inventory list with durability 0 until the menu closes; that's how the mod notices it leaving. Breaking a weapon looks the same, which is harmless (nothing is given).
@@ -401,15 +408,15 @@ Compile these out of normal builds:
 | Problem | Where | Priority |
 |---|---|---|
 | **Far warps (several km) can freeze in the sky in Ryujinx**, and one into Korok Forest hangs the game. See 5.3. | `warp.cpp` | P1 |
-| Armor read as "none" for a moment while an area loads after a warp is sent to partners, who see the puppet's armor come off and back on. | `gear.cpp` | P3 |
+| **Fixed, not seen again yet:** armor read as "none" for a moment while an area loads was sent to partners, who saw the puppet's armor come off and back on. Armor that seems to have come off is now only sent after 3 s. | `gear.cpp` | P3 |
 | **Fixed (not tried in the air or water):** a downed player is now only held sideways, so they drop or float. | `revive.cpp` | P2 |
 | **Fixed for a 5 m test offset; no real flier tried:** enemy copies now follow height too when it differs by more than 0.75 m. | `enemies.cpp` | P2 |
 | **Partly fixed:** the body search takes the nearest free body within 2 m (3 m in height) and keeps the offset. But a sleeping Stone Talus has no body of this kind at all, so big enemies may need another way; none has been tried awake. | `enemies.cpp` | P2 |
 | A puppet's weapons that are taken off (the partner changed weapons, or went out of sight) are moved away and forgotten, not deleted; the game clears them up in its own time. | `ghost.cpp` | P3 |
-| Enemies keep attacking a downed player (telling the game's position function that Link is underground was tried; enemies don't use it), and the hits keep the player's own Link standing instead of sitting (see 3.1). | `revive.cpp` | P2 |
+| **Fixed:** enemies kept attacking a downed player. They now turn to a near partner or stand still (see 2.1, 3.1). | `enemies.cpp` | P2 |
 | Worn-armor and horse actors on the puppet still trust the animation call's result (see "Starting sequences" in the reverse-engineering notes); the body no longer does. If their clips ever look stuck at the first frames, that's why. | `ghost.cpp` | P3 |
 | The warp's "area loaded" check is "Link moved". If Link is placed exactly on the ground and nothing moves him, the last hop waits for its 30 s timeout before saying "Warped". | `warp.cpp` | P3 |
-| Holding L3 is taken by the mod for warping. A tap still crouches, but anyone who holds L3 to crouch-walk will warp by accident (only when a partner is around). | `autostart.cpp`, `warp.cpp` | P3 |
+| **Fixed:** holding L3 while moving warped by accident. The hold only counts while the left stick is near its centre. | `autostart.cpp`, `warp.cpp` | P3 |
 | Banners share one slot. If several events happen together, they queue 3.5 s apart, and the game's own info messages in that slot can be replaced. | `notify.cpp` | P3 |
 | Gift messages only merge identical gifts in a row ("Apple x5"). Mixed stacks give one banner each. | `notify.cpp` | P3 |
 | `option.sav` grew from 336 to 920 bytes in the co-op copy the first time the game saved. It looks like the game rewrites its options in a newer format. Harmless, but not understood. | Saves | P3 |

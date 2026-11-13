@@ -14,4 +14,9 @@ namespace coop::game::status {
 
     /* Game thread, every tick. */
     void Tick(s64 now_ms);
+
+    /* A whistle is a call: partners get a banner with how far away it came
+       from and in which direction ("Zelda whistles: 230 m, north-east"). */
+    void OnLocalWhistle();                         /* any thread: the local player whistled */
+    void OnPartnerCall(u8 from, const float* pos); /* network thread */
 }

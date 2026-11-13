@@ -1,14 +1,19 @@
 #include "enemies.hpp"
 
+#include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include <lib.hpp>
 #include <nn/os.hpp>
 
 #include "../net/client.hpp"
+#include "anim.hpp"
+#include "ghost.hpp"
 #include "offsets.hpp"
 #include "player.hpp"
+#include "revive.hpp"
 
 namespace coop::game::enemies {
 
@@ -29,6 +34,11 @@ namespace coop::game::enemies {
         constexpr float SteerGain = 8.0f;      /* else move toward it at (distance x this) per second */
         constexpr float MaxSpeed = 12.0f;
         constexpr float HeightSlack = 0.75f;
+        /* An enemy stays with its owner until another player is clearly
+           closer: nearer than this share of the owner's distance, less a
+           margin. Two players in one fight would otherwise swap it back and
+           forth, and with it who it's fighting. */
+        constexpr float TakeRatio = 0.6f, TakeMargin = 1.0f;
 
         /* ---- what partners send (network thread writes, game thread reads) ---- */
         struct Remote {
@@ -55,6 +65,15 @@ namespace coop::game::enemies {
             int tries;
             uintptr_t cand;   /* during a search: the nearest body seen so far, 0 = none */
             float cand_d;     /* and its distance, squared */
+            u8 mode;          /* this tick: 1 = ours (we send it), 2 = a partner's (we follow), 3 = nobody's while we're down */
+            bool mine;        /* we were its owner last tick */
+            u8 last_mode;
+            u32 cur;          /* NameId of its body sequence (see Watch::cur) */
+            s64 hot_at;       /* see Watch::hot_at */
+            s64 fed_at;       /* see Watch::fed_at */
+            s64 their_hot_at; /* when a partner last said it's fighting in their world */
+            char cur_name[40]; /* ours: the last sequence its AI started, to repeat to partners */
+            s64 refresh_at;
         };
         constexpr int LocalSize = 128;
         Local g_Local[LocalSize];
@@ -67,6 +86,104 @@ namespace coop::game::enemies {
         int g_Steered = 0, g_Snapped = 0;
         float g_ErrSum = 0, g_ErrMaxY = 0; /* how far copies were from their owners' (for the log) */
         int g_ErrCount = 0;
+
+        /* ---- sequences (see OnStartAnimation) ---- */
+        /* Which sequence list belongs to which enemy, for the hook: written
+           by the game thread each tick, read on any thread. */
+        struct Watch {
+            std::atomic<uintptr_t> as_list{0};
+            std::atomic<u32> hash{0};
+            std::atomic<u8> mode{0};
+            std::atomic<u32> cur{0};    /* NameId of the body sequence it's playing as far as we know, 0 = unknown */
+            std::atomic<u32> logged{0};
+            std::atomic<u32> react{0};  /* NameId of the last thing that happened to it here (a hit...), and when */
+            std::atomic<s64> react_at{0};
+            std::atomic<s64> hot_at{0}; /* when its AI here last asked for a fighting sequence (played or dropped) */
+            std::atomic<s64> fed_at{0}; /* when its owner last told us what it's doing */
+        };
+        Watch g_Watch[LocalSize];
+        std::atomic<int> g_WatchCount{0};
+        /* When the table was last written. A tick writes it every frame while the world runs; when ticks stop
+           (a loading screen) the actors it names are going away, and their addresses go to other actors, so the
+           hook only believes a fresh table. */
+        std::atomic<s64> g_WatchAt{0};
+        constexpr s64 WatchFreshMs = 400;
+        std::atomic<int> g_AnimMode{0};
+        std::atomic<bool> g_AnimLog{false};
+        std::atomic<bool> g_Replaying{false}; /* the game thread is starting an owner's sequence */
+        constexpr int AnimQueue = 64;
+        AnimEvent g_AnimOut[AnimQueue]; /* ours, to send (hook threads write, game thread reads) */
+        int g_AnimOutCount = 0;
+        std::atomic_flag g_AnimOutLock = ATOMIC_FLAG_INIT;
+        AnimEvent g_AnimIn[AnimQueue]; /* partners', to play (network thread writes, under g_Mutex) */
+        int g_AnimInCount = 0;
+        u32 g_AnimInArea = 0;
+        int g_AnimSent = 0, g_AnimPlayed = 0, g_AnimDropped = 0;
+
+        std::atomic<bool> g_Mute{false}; /* test: treat every enemy as "nobody's while we're down" */
+
+        bool Starts(const char* s, const char* prefix) { return std::strncmp(s, prefix, std::strlen(prefix)) == 0; }
+
+        bool Has(const char* s, const char* part) { return std::strstr(s, part) != nullptr; }
+
+        /* What happens TO an enemy - it's hit, knocked down, set on fire,
+           shocked, frozen, it falls, it dies - by the sequence's name. (All
+           908 names in the 200 enemy packs were looked through for this.)
+           These are played where they happen and sent to everyone. */
+        bool Reaction(const char* n) {
+            if (Starts(n, "Attack") || Starts(n, "Throw")) return false; /* AttackDamage, ThrowElectricBall... are attacks */
+            static const char* const parts[] = {
+                "Damage", "Blown", "Burn", "Electric", "Freez", "Die", "Dead", "Killed", "Stun", "Stagger", "Scrap", "Drown",
+                "Suffer", "Groggy", "Break", "Shock", "GetUp", "Recover", "Rebound", "ThunderHit", "HeadShot",
+            };
+            for (const char* p : parts)
+                if (Has(n, p)) return true;
+            if (Has(n, "Attack")) return false; /* DownSwingAttack, FallAttack */
+            return Starts(n, "Down") || Has(n, "Fall") || std::strcmp(n, "Wait_Down") == 0;
+        }
+
+        /* Everything else is what its AI chose to do: standing, moving,
+           looking, attacking, guarding, camp life. These a copy takes from
+           its owner. */
+        bool Voluntary(const char* n) { return !Reaction(n); }
+
+        /* It has someone to fight: it noticed a player, or it's attacking,
+           guarding, aiming. An enemy belongs to the world where that's so,
+           before distance is asked. */
+        bool Fighting(const char* n) {
+            static const char* const parts[] = {
+                "Attack", "Battle", "Notice", "Arrow", "Bow", "Guard", "Shoot", "Angry", "Rush", "Beam", "Magic", "Tackle",
+                "Encounter", "Find", "Throw", "Spin", "Slash", "Kick", "Fire",
+            };
+            for (const char* p : parts)
+                if (Has(n, p)) return true;
+            return false;
+        }
+        /* Ours counts for a short while (its AI asks again every second while it's kept waiting); a partner's for
+           longer, so an enemy that runs after its owner between two swings isn't taken from them. */
+        constexpr s64 HotMs = 2500, TheirHotMs = 6000;
+
+        /* Its death isn't sent: its life is shared, so it dies in every world by itself. */
+        bool Death(const char* n) { return Has(n, "Die") || Has(n, "Dead") || Has(n, "Killed"); }
+
+        void QueueOut(u32 hash, float a, float b, const char* name, int target, int bank, u8 flag) {
+            while (g_AnimOutLock.test_and_set(std::memory_order_acquire)) {}
+            if (g_AnimOutCount < AnimQueue) {
+                AnimEvent& e = g_AnimOut[g_AnimOutCount++];
+                e.hash = hash, e.a = a, e.b = b;
+                e.slot = static_cast<s8>(target), e.bank = static_cast<s8>(bank), e.flag = flag;
+                std::snprintf(e.name, sizeof(e.name), "%s", name);
+            }
+            g_AnimOutLock.clear(std::memory_order_release);
+        }
+
+        constexpr u32 NameId(const char* s) {
+            u32 h = 2166136261u;
+            for (; *s; s++) h = (h ^ static_cast<u8>(*s)) * 16777619u;
+            return h ? h : 1;
+        }
+        constexpr u32 WaitId = NameId("Wait");
+        constexpr s64 RefreshMs = 2000; /* an owner repeats what each of its enemies is doing this often */
 
         Local* FindLocal(u32 hash) {
             for (int i = 0; i < g_LocalCount; i++)
@@ -317,6 +434,82 @@ namespace coop::game::enemies {
         }
     }
 
+    void SetAnimSync(int mode, bool log, bool mute) {
+        g_AnimMode.store(mode);
+        g_AnimLog.store(log);
+        g_Mute.store(mute);
+    }
+
+    int OnStartAnimation(uintptr_t as_list, float a, float b, const char* name, int target, int bank, bool flag) {
+        int sync = g_AnimMode.load(std::memory_order_relaxed);
+        if (!sync && !g_AnimLog.load(std::memory_order_relaxed)) return 0;
+        if (g_Replaying.load(std::memory_order_relaxed)) return 0;
+        if (NowMs() - g_WatchAt.load(std::memory_order_relaxed) > WatchFreshMs) return 0;
+        int n = g_WatchCount.load(std::memory_order_relaxed);
+        for (int i = 0; i < n; i++) {
+            Watch& w = g_Watch[i];
+            if (w.as_list.load(std::memory_order_relaxed) != as_list) continue;
+            u8 mode = w.mode.load(std::memory_order_relaxed);
+            u32 hash = w.hash.load(std::memory_order_relaxed);
+            u32 id = NameId(name);
+            u32 cur = w.cur.load(std::memory_order_relaxed);
+            if (g_AnimLog.load(std::memory_order_relaxed) && id != w.logged.exchange(id, std::memory_order_relaxed))
+                Logging.Log("[coop] enemy AS %08x slot %d '%s' (%s)", hash, target, name,
+                            mode == 1 ? "ours" : mode == 2 ? "partner's" : mode == 3 ? "nobody's, we're down" : "nobody's");
+            if (!sync) return 0;
+            if (target != 0 || !Voluntary(name)) {
+                /* Something that happened to it here (a hit, a fall): played,
+                   and what it was doing before is forgotten, so its owner's
+                   next word on it is played whatever it is. */
+                if (target == 0) w.cur.store(0, std::memory_order_relaxed);
+                /* Partners see it too (the hit was ours, on our screen). Its
+                   death isn't sent: its life is shared, so it dies in every
+                   world by itself. */
+                bool react = target == 0 && mode != 0 && !Death(name);
+                if (target == 0) {
+                    w.react.store(id, std::memory_order_relaxed);
+                    w.react_at.store(NowMs(), std::memory_order_relaxed);
+                }
+                if (react) QueueOut(hash, a, b, name, target, bank, static_cast<u8>((flag ? 1 : 0) | ReactFlag));
+                return 0;
+            }
+            bool ours = mode == 1;
+            if (Fighting(name)) w.hot_at.store(NowMs(), std::memory_order_relaxed);
+            /* Its owner says what it does - as long as the owner does say (an owner on an older build of the mod
+               sends nothing, and its copy here would stand frozen). Owners repeat themselves every 2 s. */
+            if (sync == 2 && mode == 2 && cur != 0 && NowMs() - w.fed_at.load(std::memory_order_relaxed) < 5000) return 1;
+            if (sync == 2 && mode == 3) {
+                /* Nobody's while we're down: it stands still. */
+                if (cur == WaitId) return 1;
+                w.cur.store(WaitId, std::memory_order_relaxed);
+                return id == WaitId ? 0 : 2;
+            }
+            /* It starts: sent if it's ours, and remembered either way (it may become ours while it still plays). */
+            QueueOut(hash, a, b, name, target, bank, static_cast<u8>((flag ? 1 : 0) | (ours ? 0 : NoteFlag)));
+            w.cur.store(id, std::memory_order_relaxed);
+            return 0;
+        }
+        return 0;
+    }
+
+    void OnRemoteAnims(u8 from, u32 area, const AnimEvent* events, int count) {
+        if (!g_MutexReady) return;
+        (void)from;
+        nn::os::LockMutex(&g_Mutex);
+        if (area != g_AnimInArea) {
+            g_AnimInCount = 0;
+            g_AnimInArea = area;
+        }
+        for (int i = 0; i < count && g_AnimInCount < AnimQueue; i++) g_AnimIn[g_AnimInCount++] = events[i];
+        nn::os::UnlockMutex(&g_Mutex);
+    }
+
+    void Stop() {
+        g_WatchCount.store(0, std::memory_order_relaxed);
+        g_WatchAt.store(0, std::memory_order_relaxed);
+        g_LocalCount = 0;
+    }
+
     void OnRemote(u8 from, u32 area, const Pose* poses, int count) {
         if (!g_MutexReady) return;
         s64 now = NowMs();
@@ -356,6 +549,13 @@ namespace coop::game::enemies {
             g_Area = area;
             g_LocalCount = 0;
         }
+
+        /* What the hook saw start since the last tick (same order as then). */
+        for (int i = 0; i < g_LocalCount && i < g_WatchCount.load(std::memory_order_relaxed); i++)
+            if (g_Watch[i].hash.load(std::memory_order_relaxed) == g_Local[i].hash) {
+                g_Local[i].cur = g_Watch[i].cur.load(std::memory_order_relaxed);
+                g_Local[i].hot_at = g_Watch[i].hot_at.load(std::memory_order_relaxed);
+            }
 
         /* Placed enemies alive near us (actor list, under its lock). */
         uintptr_t slot = Read<uintptr_t>(Base() + offsets::Got_ActorCreatorInstance);
@@ -430,6 +630,8 @@ namespace coop::game::enemies {
 
         Pose out[MaxPerMessage];
         int nout = 0;
+        bool down = revive::IsDown() || g_Mute.load(std::memory_order_relaxed);
+        bool sync_anims = g_AnimMode.load(std::memory_order_relaxed) == 2;
         bool send = now >= g_NextSend;
         if (send) g_NextSend = now + SendMs;
         Local* need_body[16];
@@ -441,44 +643,68 @@ namespace coop::game::enemies {
         for (int n = 0; n < g_LocalCount; n++) {
             int i = g_LocalCount ? (n + g_SendStart) % g_LocalCount : 0;
             Local& l = g_Local[i];
+            l.mode = 0;
             const float* m = reinterpret_cast<const float*>(l.actor + offsets::Actor_Mtx);
             float mdx = m[3] - me[0], mdz = m[11] - me[2];
             float my_d = mdx * mdx + mdz * mdz;
 
-            /* Am I the closest player to it? */
-            bool closest = my_d < OwnRange * OwnRange;
+            /* Whose is it? A player who is down owns nothing. */
+            float my_dist = std::sqrt(my_d);
+            float other = 1e9f;
+            float sender = -1.0f;
             for (auto& p : peers) {
-                if (!closest) break;
                 if (!p.present || !p.has_state || p.state.map_area != area ||
-                    tick_now - static_cast<s64>(p.state_tick) > stale)
+                    tick_now - static_cast<s64>(p.state_tick) > stale || (p.state.anim_hash & 0xff) == anim::Down)
                     continue;
                 float dx = m[3] - p.state.pos[0], dz = m[11] - p.state.pos[2];
-                if (dx * dx + dz * dz < my_d) closest = false;
+                float d = std::sqrt(dx * dx + dz * dz);
+                if (d < other) other = d;
+                if (have_remote[i] && p.id == remote[i].from) sender = d;
             }
-
-            if (have_remote[i]) {
+            bool can_own = my_d < OwnRange * OwnRange && !down;
+            bool want;
+            bool hot = sync_anims && l.hot_at && now - l.hot_at < HotMs;
+            bool their_hot = sync_anims && l.their_hot_at && now - l.their_hot_at < TheirHotMs;
+            if (have_remote[i] && hot != their_hot) {
+                /* It's fighting in one world and idling in the other: it belongs where it fights. */
+                want = can_own && hot;
+            } else if (have_remote[i]) {
                 const Remote& r = remote[i];
-                /* Both of us think we're closest: the lower id wins. */
-                if (closest && my_id < r.from) {
-                    /* ours: ignore theirs */
-                } else {
-                    l.yield_until = now + YieldMs;
-                    if (!BodyOk(l)) {
-                        l.body = 0;
-                        /* Some never have one (see FindBodies): ask less and less often. */
-                        s64 wait = l.tries > 8 ? 30000 : l.tries > 3 ? 10000 : 2000;
-                        if (now - l.body_tried > wait && nneed < 16) need_body[nneed++] = &l;
-                        continue;
-                    }
-                    Steer(l, r, dt);
+                float theirs = sender >= 0 ? sender : other;
+                want = can_own && my_dist < theirs * TakeRatio - TakeMargin;
+                /* Both of us send it: the lower id keeps it, unless the other is the one clearly closer. */
+                if (!want && l.mine) want = can_own && my_id < r.from && !(theirs < my_dist * TakeRatio - TakeMargin);
+            } else if (l.mine) {
+                want = can_own && !(other < my_dist * TakeRatio - TakeMargin);
+            } else {
+                want = can_own && my_dist <= other;
+            }
+            l.mine = want;
+
+            if (have_remote[i] && !want) {
+                const Remote& r = remote[i];
+                l.yield_until = now + YieldMs;
+                l.mode = 2;
+                if (!BodyOk(l)) {
+                    l.body = 0;
+                    /* Some never have one (see FindBodies): ask less and less often. */
+                    s64 wait = l.tries > 8 ? 30000 : l.tries > 3 ? 10000 : 2000;
+                    if (now - l.body_tried > wait && nneed < 16) need_body[nneed++] = &l;
                     continue;
                 }
+                Steer(l, r, dt);
+                continue;
             }
-            if (closest && now >= l.yield_until && send && nout < MaxPerMessage) {
-                Pose& o = out[nout++];
-                o.hash = l.hash;
-                o.pos[0] = m[3], o.pos[1] = m[7], o.pos[2] = m[11];
-                o.rot_y = std::atan2(m[2], m[10]);
+            if (want) {
+                l.mode = 1;
+                if (send && nout < MaxPerMessage) {
+                    Pose& o = out[nout++];
+                    o.hash = l.hash;
+                    o.pos[0] = m[3], o.pos[1] = m[7], o.pos[2] = m[11];
+                    o.rot_y = std::atan2(m[2], m[10]);
+                }
+            } else if (down) {
+                l.mode = 3;
             }
         }
         /* A search runs a few milliseconds a frame until it's through; the
@@ -491,10 +717,112 @@ namespace coop::game::enemies {
         }
         if (send && nout) net::SendEnemyPoses(area, out, nout);
 
+        /* Sequences: ours go out, the partners' are played on the copies we
+           follow, then the hook's table is written for the next frame. */
+        if (g_AnimMode.load(std::memory_order_relaxed)) {
+            AnimEvent ev[AnimQueue];
+            while (g_AnimOutLock.test_and_set(std::memory_order_acquire)) {}
+            int n = g_AnimOutCount;
+            std::memcpy(ev, g_AnimOut, n * sizeof(AnimEvent));
+            g_AnimOutCount = 0;
+            g_AnimOutLock.clear(std::memory_order_release);
+            int keep = 0;
+            for (int i = 0; i < n; i++) {
+                Local* l = FindLocal(ev[i].hash);
+                if (l && !(ev[i].flag & ReactFlag)) {
+                    std::snprintf(l->cur_name, sizeof(l->cur_name), "%s", ev[i].name);
+                    l->refresh_at = now + RefreshMs;
+                }
+                if (ev[i].flag & NoteFlag) continue; /* not ours: nothing to send */
+                ev[keep++] = ev[i];
+            }
+            n = keep;
+            /* What each of ours is doing, again: for a partner whose copy
+               missed it (just arrived, or its copy was hit meanwhile). */
+            for (int i = 0; i < g_LocalCount && n < AnimQueue; i++) {
+                Local& l = g_Local[i];
+                if (l.mode != 1 || !l.cur_name[0] || now < l.refresh_at) continue;
+                l.refresh_at = now + RefreshMs;
+                AnimEvent& e = ev[n++];
+                e = {};
+                e.hash = l.hash, e.a = -1.0f, e.b = -1.0f, e.flag = 1 | RefreshFlag;
+                std::snprintf(e.name, sizeof(e.name), "%s", l.cur_name);
+            }
+            for (int i = 0; i < n; i += MaxAnimsPerMessage)
+                net::SendEnemyAnims(area, ev + i, n - i < MaxAnimsPerMessage ? n - i : MaxAnimsPerMessage);
+            g_AnimSent += n;
+
+            n = 0;
+            if (g_MutexReady) {
+                nn::os::LockMutex(&g_Mutex);
+                if (g_AnimInArea == area) {
+                    n = g_AnimInCount;
+                    std::memcpy(ev, g_AnimIn, n * sizeof(AnimEvent));
+                }
+                g_AnimInCount = 0;
+                nn::os::UnlockMutex(&g_Mutex);
+            }
+            for (int i = 0; i < n; i++) {
+                Local* l = FindLocal(ev[i].hash);
+                bool react = (ev[i].flag & ReactFlag) != 0;
+                ev[i].name[sizeof(ev[i].name) - 1] = 0;
+                if (l && !react) {
+                    l->fed_at = now;
+                    if (Fighting(ev[i].name)) l->their_hot_at = now;
+                }
+                if (!l || (l->mode != 2 && !react)) {
+                    g_AnimDropped++;
+                    continue;
+                }
+                if (react) {
+                    /* The same thing just happened to our copy by itself (it was knocked down in every world and
+                       gets up in every world): not started a second time. */
+                    Watch& w = g_Watch[l - g_Local];
+                    if (w.hash.load(std::memory_order_relaxed) == l->hash && w.react.load(std::memory_order_relaxed) == NameId(ev[i].name) &&
+                        now - w.react_at.load(std::memory_order_relaxed) < 1500)
+                        continue;
+                    w.react.store(NameId(ev[i].name), std::memory_order_relaxed);
+                    w.react_at.store(now, std::memory_order_relaxed);
+                }
+                u32 id = react ? 0 : NameId(ev[i].name);
+                if ((ev[i].flag & RefreshFlag) && l->cur == id) continue; /* already doing that */
+                uintptr_t as_list = Read<uintptr_t>(l->actor + offsets::Actor_ASList);
+                if (!as_list) continue;
+                g_Replaying.store(true, std::memory_order_relaxed);
+                StartAS(as_list, ev[i].a, ev[i].b, ev[i].name, ev[i].slot, ev[i].bank, (ev[i].flag & 1) != 0);
+                g_Replaying.store(false, std::memory_order_relaxed);
+                l->cur = id;
+                /* What it's doing now, in case it becomes ours before its own AI says anything. */
+                if (!react) std::snprintf(l->cur_name, sizeof(l->cur_name), "%s", ev[i].name);
+                g_AnimPlayed++;
+            }
+        }
+        for (int i = 0; i < g_LocalCount; i++) {
+            Local& l = g_Local[i];
+            if (l.mode != l.last_mode) {
+                if (g_AnimLog.load(std::memory_order_relaxed))
+                    Logging.Log("[coop] enemy %08x is now %s", l.hash,
+                                l.mode == 1 ? "ours" : l.mode == 2 ? "a partner's" : l.mode == 3 ? "nobody's (we're down)" : "nobody's");
+                if (l.mode == 1) l.refresh_at = 0; /* newly ours: partners hear what it's doing at once */
+                l.last_mode = l.mode;
+            }
+            g_Watch[i].as_list.store(Read<uintptr_t>(l.actor + offsets::Actor_ASList), std::memory_order_relaxed);
+            g_Watch[i].hash.store(l.hash, std::memory_order_relaxed);
+            g_Watch[i].mode.store(l.mode, std::memory_order_relaxed);
+            g_Watch[i].cur.store(l.cur, std::memory_order_relaxed);
+            g_Watch[i].fed_at.store(l.fed_at, std::memory_order_relaxed);
+        }
+        g_WatchCount.store(g_LocalCount, std::memory_order_relaxed);
+        g_WatchAt.store(now, std::memory_order_relaxed);
+
         if (now >= g_LogAt && (g_Steered || g_Snapped)) {
             g_LogAt = now + 10000;
             Logging.Log("[coop] enemies: %d tracked; following partners: %d moves, %d snaps, %.2f m off on average, height off by up to %.2f m",
                         g_LocalCount, g_Steered, g_Snapped, g_ErrCount ? g_ErrSum / g_ErrCount : 0.0f, g_ErrMaxY);
+            if (g_AnimSent || g_AnimPlayed || g_AnimDropped)
+                Logging.Log("[coop] enemies: sequences sent %d, played from partners %d, not ours to play %d", g_AnimSent,
+                            g_AnimPlayed, g_AnimDropped);
+            g_AnimSent = g_AnimPlayed = g_AnimDropped = 0;
             g_Steered = g_Snapped = g_ErrCount = 0;
             g_ErrSum = g_ErrMaxY = 0;
         }

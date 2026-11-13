@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include <lib.hpp>
+#include <nn/fs.hpp>
 #include <nn/os.hpp>
 
 #include "../net/client.hpp"
@@ -388,6 +389,269 @@ namespace coop::game::warp {
 
         bool Begin(const net::Peer& peer, const float* me, s64 now, bool announce);
 
+        /* ---- travel: the game's own stage change ----
+           A far-away partner, or one in a shrine, is reached the way the
+           game's fast travel does it: a stage change with a loading screen
+           to the fast-travel point nearest them (or to their shrine's
+           entrance), then the ordinary warp for the rest of the way. Hops
+           through the sky over several kilometres got stuck (the game waits
+           for map it never loads); right after a real load they don't. */
+        struct TravelPoint {
+            char stage[16];
+            char start[32];
+            float at[3];
+        };
+        constexpr int MaxPoints = 200;
+        TravelPoint g_Points[MaxPoints]; /* romfs botw-coop/travel-points.txt, built from the player's own game files */
+        int g_PointCount = 0;
+        bool g_PointsTried = false;
+        constexpr float TravelMinDist = 1500.0f; /* nearer than this, the warp alone (hops that far have always loaded) */
+        constexpr float TravelGain = 300.0f;    /* and only if the point is at least this much nearer to them than we are */
+        /* How long to wait for the game to start the stage change, and then for the load itself
+           (in Ryujinx a load took 20 to 50 s; in Savage Wind Recomp 10 s). */
+        constexpr s64 TravelStartTimeoutMs = 120000, TravelLoadTimeoutMs = 240000;
+        /* A load that hasn't finished by now is stuck (in Ryujinx one in eight was, asked for from the main
+           thread; three in eight from any thread: the loading screen stayed up for good, with a hundred actors
+           made and no more coming). Holding Link on his partner's spot with the game's question about the
+           ground answered "ready" didn't help (the game isn't asking). What's tried now: the same stage change
+           once more. */
+        constexpr s64 TravelStuckMs = 60000;
+        struct {
+            bool active;
+            s64 started;
+            u8 target;
+            char name[32];
+            u32 area;
+            float at[3];
+            bool has_at;
+            char stage[32], start[40];
+            int asks;
+            s64 asked_at;
+            s64 moved_at; /* when Link's actor was first seen on the new stage: the load is under way */
+            s64 told_at;
+            u32 gate_calls;
+            s64 due_at;
+            int again; /* times the stage change was asked for once more because the load was stuck */
+            float from[3];
+        } g_Travel;
+        /* The game drops a stage change asked for while the world is still
+           settling after a load (in Ryujinx, for 20 s after a save loaded:
+           nothing happened), so it's only asked once the world has run
+           without a stop for a few seconds, and asked again if no loading
+           screen follows. Never twice close together: two requests 1 ms
+           apart left Ryujinx on the new stage with the world stopped. */
+        constexpr s64 TravelQuietMs = 3000, TravelAskAgainMs = 10000;
+        constexpr int TravelAsksMax = 5;
+
+        /* Link's own position (his actor), which is right during a load too; PlayerInfo's copy isn't. */
+        bool ActorPos(float (&out)[3]) {
+            uintptr_t info = Read<uintptr_t>(Base() + offsets::PlayerInfoInstance);
+            uintptr_t actor = info ? Read<uintptr_t>(info + offsets::PlayerInfo_PlayerActor) : 0;
+            if (!actor) return false;
+            const float* m = reinterpret_cast<const float*>(actor + offsets::Actor_Mtx);
+            out[0] = m[3], out[1] = m[7], out[2] = m[11];
+            return true;
+        }
+
+        void LoadPoints() {
+            g_PointsTried = true;
+            nn::fs::FileHandle file;
+            if (nn::fs::OpenFile(&file, "content:/botw-coop/travel-points.txt", nn::fs::OpenMode_Read) != 0) {
+                Logging.Log("[coop] warp: no travel-points.txt (run the setup again): far warps go in hops");
+                return;
+            }
+            static char buf[12 * 1024];
+            long size = 0;
+            nn::fs::GetFileSize(&size, file);
+            if (size > static_cast<long>(sizeof(buf)) - 1) size = sizeof(buf) - 1;
+            nn::fs::ReadFile(file, 0, buf, static_cast<ulong>(size));
+            nn::fs::CloseFile(file);
+            buf[size] = 0;
+            for (char* line = buf; line && *line && g_PointCount < MaxPoints;) {
+                char* eol = std::strchr(line, '\n');
+                if (eol) *eol = 0;
+                TravelPoint& t = g_Points[g_PointCount];
+                if (std::sscanf(line, "%15s %31s %f %f %f", t.stage, t.start, &t.at[0], &t.at[1], &t.at[2]) == 5) g_PointCount++;
+                line = eol ? eol + 1 : nullptr;
+            }
+            Logging.Log("[coop] warp: %d fast-travel points", g_PointCount);
+        }
+
+        /* The mod's tick runs on whichever game thread asked for Link's position first that frame: the main
+           thread mostly, a worker thread now and then. The game's own stage changes come from its events, on the
+           main thread; ours is only asked for from there too. */
+        bool OnMainThread() {
+            const char* name = nn::os::GetThreadNamePointer(nn::os::GetCurrentThread());
+            return name && std::strcmp(name, "MainThread") == 0;
+        }
+
+        void ChangeStage(const char* stage, const char* start) {
+            struct Str {
+                uintptr_t vtable;
+                const char* str;
+            };
+            static char s_stage[32], s_start[40]; /* (kept: the game may read them after the call returns) */
+            std::snprintf(s_stage, sizeof(s_stage), "%s", stage);
+            std::snprintf(s_start, sizeof(s_start), "%s", start);
+            uintptr_t vt = Read<uintptr_t>(Base() + offsets::Got_SafeStringVtableBase) + 0x10;
+            Str a{vt, s_stage}, b{vt, s_start};
+            reinterpret_cast<void (*)(const Str*, const Str*, int, bool)>(Base() + offsets::StageInfo_ChangeScene)(&a, &b, 0, false);
+        }
+
+        /* Starts a stage change toward this partner if that's the way to reach them. */
+        bool g_TravelOn = true;
+        int g_TravelChain = 0; /* stage changes in a row for one warp (the partner traveled on while we loaded) */
+
+        bool StartTravel(const net::Peer& p, const float* me, u32 my_area, s64 now) {
+            if (g_Travel.active) return true;
+            if (!g_TravelOn) return false;
+            if (!g_PointsTried) LoadPoints();
+            char stage[32], start[40];
+            float at[3] = {0, 0, 0};
+            bool has_at = false;
+            if (p.state.map_area == OverworldArea()) {
+                const TravelPoint* best = nullptr;
+                float best_d = 0;
+                for (int i = 0; i < g_PointCount; i++) {
+                    float dx = g_Points[i].at[0] - p.state.pos[0], dz = g_Points[i].at[2] - p.state.pos[2];
+                    float d = dx * dx + dz * dz;
+                    if (!best || d < best_d) best = &g_Points[i], best_d = d;
+                }
+                if (!best) return false;
+                if (my_area == OverworldArea()) {
+                    float dx = me[0] - p.state.pos[0], dz = me[2] - p.state.pos[2];
+                    float mine = std::sqrt(dx * dx + dz * dz);
+                    if (mine < TravelMinDist || std::sqrt(best_d) + TravelGain > mine) return false;
+                }
+                std::snprintf(stage, sizeof(stage), "%s", best->stage);
+                std::snprintf(start, sizeof(start), "%s", best->start);
+                std::memcpy(at, best->at, sizeof(at));
+                has_at = true;
+            } else {
+                /* A shrine is "CDungeon/DungeonNNN", entered at "Entrance_1". */
+                if (p.state.map_area == my_area) return false;
+                int found = -1;
+                char name[16];
+                for (int i = 0; i < 140 && found < 0; i++) {
+                    std::snprintf(name, sizeof(name), "Dungeon%03d", i);
+                    if (AreaOf("CDungeon", name) == p.state.map_area) found = i;
+                }
+                if (found < 0) return false;
+                std::snprintf(stage, sizeof(stage), "CDungeon/Dungeon%03d", found);
+                std::snprintf(start, sizeof(start), "Entrance_1");
+            }
+            Logging.Log("[coop] warp: traveling to %s by the game's own stage change: %s at %s", p.name, stage, start);
+            notify::Show("Traveling to %.10s...", p.name);
+            g_Travel.active = true;
+            g_Travel.started = now;
+            g_Travel.target = p.id;
+            std::snprintf(g_Travel.name, sizeof(g_Travel.name), "%s", p.name);
+            g_Travel.area = p.state.map_area;
+            std::memcpy(g_Travel.at, at, sizeof(at));
+            g_Travel.has_at = has_at;
+            std::snprintf(g_Travel.stage, sizeof(g_Travel.stage), "%s", stage);
+            std::snprintf(g_Travel.start, sizeof(g_Travel.start), "%s", start);
+            g_Travel.asks = 0;
+            g_Travel.asked_at = 0;
+            g_Travel.moved_at = 0;
+            g_Travel.due_at = 0;
+            g_Travel.again = 0;
+            std::memcpy(g_Travel.from, me, sizeof(g_Travel.from));
+            return true; /* (TravelTick asks the game, when the world is ready for it) */
+        }
+
+        bool Begin(const net::Peer& peer, const float* me, s64 now, bool announce);
+
+        /* After the loading screen: the rest of the way to the partner. */
+        void TravelTick(s64 now) {
+            if (!g_Travel.active) return;
+            if (g_Travel.moved_at ? now - g_Travel.moved_at > TravelLoadTimeoutMs : now - g_Travel.started > TravelStartTimeoutMs) {
+                g_Travel.active = false;
+                Logging.Log("[coop] warp: the stage change to %s %s", g_Travel.name,
+                            g_Travel.moved_at ? "started, but the stage didn't finish loading" : "never started");
+                notify::Show("Travel to %.10s didn't finish", g_Travel.name);
+                return;
+            }
+            float at[3], me[3], rot;
+            if (!ActorPos(at)) return;
+            float fx = at[0] - g_Travel.from[0], fz = at[2] - g_Travel.from[2];
+            if (LocalArea() != g_Travel.area || (g_Travel.has_at && fx * fx + fz * fz < 30.0f * 30.0f)) {
+                /* Still where we started. Ask (again) once the world has been running for a while. */
+                bool due = now - items::LastPausedMs() > TravelQuietMs && g_Travel.asks < TravelAsksMax &&
+                           (g_Travel.asks == 0 || now - g_Travel.asked_at > TravelAskAgainMs);
+                if (!due) g_Travel.due_at = 0;
+                else if (!g_Travel.due_at) g_Travel.due_at = now;
+                /* (Not on the main thread within 2 s: wherever this runs, the main thread isn't called that here.) */
+                if (due && (OnMainThread() || now - g_Travel.due_at > 2000)) {
+                    g_Travel.asks++;
+                    g_Travel.asked_at = now;
+                    g_Travel.due_at = 0;
+                    Logging.Log("[coop] warp: asking the game for the stage change (%d)%s", g_Travel.asks,
+                                OnMainThread() ? "" : ", not from the main thread");
+                    ChangeStage(g_Travel.stage, g_Travel.start);
+                }
+                return;
+            }
+            /* On the new stage: the load is under way. It's done once the world runs again and Link is live
+               (PlayerInfo's copy of his position follows his actor again; during the load it stays behind). */
+            if (g_Travel.moved_at && now - g_Travel.told_at >= 5000) {
+                u32 calls = g_GateCalls.load(std::memory_order_relaxed);
+                Logging.Log("[coop] warp: loading for %lld s: the game asked about the ground %u times in the last 5 s (%d ready in a row), "
+                            "its clock last stood still %lld ms ago",
+                            (now - g_Travel.moved_at) / 1000, calls - g_Travel.gate_calls, g_ReadyRun.load(std::memory_order_relaxed),
+                            now - items::LastPausedMs());
+                g_Travel.told_at = now;
+                g_Travel.gate_calls = calls;
+            }
+            if (g_Travel.moved_at && now - g_Travel.moved_at > TravelStuckMs) {
+                if (g_Travel.again >= 1) {
+                    g_Travel.active = false;
+                    Logging.Log("[coop] warp: the stage is stuck loading for the second time: giving up");
+                    notify::Show("Travel is stuck: please restart the game");
+                    return;
+                }
+                if (!OnMainThread()) return;
+                g_Travel.again++;
+                g_Travel.moved_at = now;
+                Logging.Log("[coop] warp: the load is stuck after %lld s: asking the game for the same stage change once more",
+                            TravelStuckMs / 1000);
+                ChangeStage(g_Travel.stage, g_Travel.start);
+                return;
+            }
+            if (!g_Travel.moved_at) {
+                g_Travel.moved_at = now;
+                g_Travel.told_at = now;
+                g_Travel.gate_calls = g_GateCalls.load(std::memory_order_relaxed);
+                Logging.Log("[coop] warp: the stage change started after %lld ms (%d request%s)", now - g_Travel.started, g_Travel.asks,
+                            g_Travel.asks == 1 ? "" : "s");
+            }
+            if (now - items::LastPausedMs() < 1500 || !GetLocalPlayer(me, &rot)) return;
+            float lx = me[0] - at[0], lz = me[2] - at[2];
+            if (lx * lx + lz * lz > 5.0f * 5.0f) return;
+            if (g_Travel.has_at) {
+                float dx = me[0] - g_Travel.at[0], dz = me[2] - g_Travel.at[2];
+                if (dx * dx + dz * dz > 80.0f * 80.0f) return;
+            }
+            g_Travel.active = false;
+            Logging.Log("[coop] warp: stage loaded after %lld ms, at (%.1f, %.1f, %.1f)", now - g_Travel.started, me[0], me[1], me[2]);
+            net::Peer peers[net::MaxPeers];
+            net::GetPeers(peers);
+            for (auto& p : peers) {
+                if (!p.present || p.id != g_Travel.target || !p.has_state) continue;
+                /* They went on somewhere far while we were loading: once more, then that's it. */
+                if (g_TravelChain < 1) {
+                    g_TravelChain++;
+                    if (StartTravel(p, me, LocalArea(), now)) return;
+                }
+                if (p.state.map_area != LocalArea()) {
+                    notify::Show("%.10s has moved on", p.name);
+                    return;
+                }
+                Begin(p, me, now, true);
+                return;
+            }
+        }
+
         void TryWarp(s64 now) {
             float me[3], rot;
             if (!GetLocalPlayer(me, &rot)) return;
@@ -419,10 +683,16 @@ namespace coop::game::warp {
             if (!pick) pick = first;
             if (!pick) {
                 if (!fresh) notify::Show("No partner to warp to");
+                else if (g_TravelChain = 0, StartTravel(*elsewhere, me, area, now)) g_LastTarget = elsewhere->id;
                 else if (area == OverworldArea())
                     notify::Show("%s is in a shrine or Divine Beast", elsewhere->name);
                 else
                     notify::Show("%s is outside: leave first", elsewhere->name);
+                return;
+            }
+            g_TravelChain = 0;
+            if (StartTravel(*pick, me, area, now)) {
+                g_LastTarget = pick->id;
                 return;
             }
             Begin(*pick, me, now, true);
@@ -496,13 +766,18 @@ namespace coop::game::warp {
         m[3] = pos[0], m[11] = pos[2];
     }
 
-    bool GoToPartner(u8 id, s64 now) {
+    bool GoToPartner(u8 id, s64 now, bool travel) {
         float me[3];
         if (g_Active || !GetLocalPlayerPos(me)) return false;
         net::Peer peers[net::MaxPeers];
         net::GetPeers(peers);
-        for (auto& p : peers)
-            if (p.present && p.id == id && p.has_state && p.state.map_area == LocalArea()) return Begin(p, me, now, false);
+        u32 area = LocalArea();
+        for (auto& p : peers) {
+            if (!p.present || p.id != id || !p.has_state) continue;
+            g_TravelChain = 0;
+            if (travel && StartTravel(p, me, area, now)) return true;
+            return p.state.map_area == area && Begin(p, me, now, false);
+        }
         return false;
     }
 
@@ -512,7 +787,7 @@ namespace coop::game::warp {
         s64 g_NextFollow = 0;
 
         void FollowTest(s64 now) {
-            if (g_TestFollow <= 0 || g_Active || now < g_NextFollow) return;
+            if (g_TestFollow <= 0 || g_Active || g_Travel.active || now < g_NextFollow) return;
             g_NextFollow = now + 3000;
             float me[3];
             if (!GetLocalPlayerPos(me)) return;
@@ -521,18 +796,20 @@ namespace coop::game::warp {
             const net::Peer* nearest = nullptr;
             float nearest_d = 0;
             for (auto& p : peers) {
-                if (!p.present || !p.has_state || p.state.map_area != LocalArea()) continue;
+                if (!p.present || !p.has_state) continue;
                 if (g_TestLeader[0] && std::strcmp(p.name, g_TestLeader) != 0) continue;
                 float dx = p.state.pos[0] - me[0], dy = p.state.pos[1] - me[1], dz = p.state.pos[2] - me[2];
-                float d = dx * dx + dy * dy + dz * dz;
+                float d = p.state.map_area == LocalArea() ? dx * dx + dy * dy + dz * dz : 1e12f; /* another area: far */
                 if (!nearest || d < nearest_d) nearest = &p, nearest_d = d;
             }
-            if (nearest && nearest_d > static_cast<float>(g_TestFollow) * g_TestFollow && GoToPartner(nearest->id, now))
+            if (nearest && nearest_d > static_cast<float>(g_TestFollow) * g_TestFollow && GoToPartner(nearest->id, now, true))
                 g_NextFollow = now + 8000;
         }
     }
 
     void SetDirect(bool on) { g_Direct = on; }
+    void SetTravel(bool on) { g_TravelOn = on; }
+    bool Traveling() { return g_Travel.active && g_Travel.asks > 0; }
 
     void SetTestFollow(int metres, const char* leader) {
         g_TestFollow = metres;
@@ -548,7 +825,7 @@ namespace coop::game::warp {
     bool Busy(s64 now) { return g_Active || now - g_LastActiveAt < 3000; }
 
     bool Loading(s64 now) {
-        return g_Active || g_SettleUntil != 0 || now < g_LandHoldUntil || now - g_LastActiveAt < 5000;
+        return g_Active || g_Travel.active || g_SettleUntil != 0 || now < g_LandHoldUntil || now - g_LastActiveAt < 5000;
     }
 
     void Tick(s64 now) {
@@ -568,6 +845,7 @@ namespace coop::game::warp {
         if (g_Active || now <= g_GuardUntil || now <= g_LandUntil) ForgetFall();
         GuardLife(now);
         WatchLanding(now);
+        TravelTick(now);
         FollowTest(now);
 
         s64 held = StickClickHeldMs();

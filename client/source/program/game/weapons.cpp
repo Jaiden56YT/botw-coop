@@ -130,7 +130,36 @@ namespace coop::game::weapons {
         }
 
         /* Hands a loose weapon to the partner it landed near, and takes ours away. */
+        /* A plain weapon a partner gave lands at our feet as a new actor,
+           which starts unused. Its wear is put on it once it's there. */
+        struct Wear {
+            uintptr_t actor;
+            s32 durability;
+            s64 until;
+        };
+        Wear g_Wear[8];
+
+        void ApplyWear(s64 now, const uintptr_t* alive, int nalive) {
+            for (auto& w : g_Wear) {
+                if (!w.actor) continue;
+                if (now > w.until) {
+                    w.actor = 0;
+                    continue;
+                }
+                bool live = false;
+                for (int i = 0; i < nalive; i++) live |= alive[i] == w.actor;
+                if (!live) continue;
+                using GetLifeFn = s32* (*)(uintptr_t);
+                s32* life = reinterpret_cast<GetLifeFn>(Read<uintptr_t>(Read<uintptr_t>(w.actor) + offsets::ActorVt_GetLife))(w.actor);
+                if (!life || *life <= 0) continue;
+                Logging.Log("[coop] gifts: the given weapon's durability %d -> %d", *life, w.durability);
+                if (*life > w.durability) *life = w.durability;
+                w.actor = 0;
+            }
+        }
+
         void CheckGifts(s64 now, const uintptr_t* alive, int nalive, const uintptr_t* carried, int ncarried) {
+            ApplyWear(now, alive, nalive);
             net::Peer peers[net::MaxPeers];
             net::GetPeers(peers);
             u32 area = LocalArea();
@@ -458,6 +487,13 @@ namespace coop::game::weapons {
                 float at[3] = {me[0] + std::sin(ang) * 1.5f, me[1] + 0.5f, me[2] + std::cos(ang) * 1.5f};
                 uintptr_t a = SpawnActor(gifts[i], at, rot);
                 g_Received[g_ReceivedHead++ % 16] = a;
+                if (a && !info[i].flags && info[i].durability > 0) {
+                    for (auto& w : g_Wear) {
+                        if (w.actor) continue;
+                        w = {a, info[i].durability, now + 8000};
+                        break;
+                    }
+                }
                 Logging.Log("[coop] gifts: %s gave you %s%s", from[i], gifts[i], a ? "" : " (couldn't spawn it)");
                 if (a && !told) notify::Gift(true, from[i], gifts[i]);
             }

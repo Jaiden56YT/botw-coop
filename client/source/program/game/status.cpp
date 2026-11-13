@@ -1,5 +1,6 @@
 #include "status.hpp"
 
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -8,6 +9,8 @@
 #include <nn/os.hpp>
 
 #include "../net/client.hpp"
+#include "anim.hpp"
+#include "autostart.hpp"
 #include "notify.hpp"
 #include "player.hpp"
 
@@ -34,7 +37,11 @@ namespace coop::game::status {
             u32 last_area;
             float last_pos[3];
             s64 travel_at; /* a jump was seen: announce it at this time, unless they jump again */
+            bool apart;    /* they've been out of sight (far, or in another area) since we last met */
+            s64 met_at;
         };
+        constexpr float ApartDist = 60.0f, MeetDist = 20.0f;
+        constexpr s64 MeetRepeatMs = 60000;
         Watch g_Watch[net::MaxPeers];
 
         Watch& For(u8 id) {
@@ -42,7 +49,7 @@ namespace coop::game::status {
                 if (w.used && w.id == id) return w;
             for (auto& w : g_Watch)
                 if (!w.used) {
-                    w = {id, true, false, -RepeatMs, false, 0, {0, 0, 0}, 0};
+                    w = {id, true, false, -RepeatMs, false, 0, {0, 0, 0}, 0, true, -MeetRepeatMs};
                     return w;
                 }
             return g_Watch[0];
@@ -56,6 +63,24 @@ namespace coop::game::status {
         }
 
         s64 g_NextAt = 0;
+
+        constexpr s64 CallRepeatMs = 8000; /* whistling again and again is one call */
+        std::atomic<bool> g_Whistled{false};
+        s64 g_CalledAt = -CallRepeatMs;
+        struct Call {
+            std::atomic<bool> pending{false};
+            float pos[3];
+        };
+        Call g_Calls[256]; /* by player id */
+
+        const char* Compass(float dx, float dz) {
+            /* +x is east, +z is south. */
+            static const char* const names[] = {"north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"};
+            float a = std::atan2(dx, -dz); /* 0 = north, clockwise */
+            int i = static_cast<int>(std::floor(a / 0.7853982f + 0.5f));
+            return names[((i % 8) + 8) % 8];
+        }
+        u32 g_SeenTaps = 0;
 
         void Distance(const float* a, const float* b, char* out, size_t cap) {
             float dx = a[0] - b[0], dz = a[2] - b[2];
@@ -130,12 +155,74 @@ namespace coop::game::status {
             if (!here) w.used = false;
         }
 
+        /* Our whistle goes out; partners' whistles are shown. */
+        if (g_Whistled.exchange(false) && now - g_CalledAt >= CallRepeatMs) {
+            g_CalledAt = now;
+            net::SendCall(me);
+        }
+        for (auto& p : peers) {
+            if (!p.present || !g_Calls[p.id].pending.exchange(false)) continue;
+            const float* at = g_Calls[p.id].pos;
+            if (p.has_state && p.state.map_area != area) {
+                notify::Show("%.10s whistles (%s)", p.name, area == OverworldArea() ? "in a shrine" : "outside");
+                continue;
+            }
+            float dx = at[0] - me[0], dz = at[2] - me[2];
+            float d = std::sqrt(dx * dx + dz * dz);
+            if (d < 15.0f) notify::Show("%.10s whistles, right by you", p.name);
+            else if (d >= 1000.0f) notify::Show("%.10s whistles: %.1f km, %s", p.name, d / 1000.0f, Compass(dx, dz));
+            else notify::Show("%.10s whistles: %.0f m, %s", p.name, d, Compass(dx, dz));
+        }
+
+        /* Two taps on the left stick click: how every partner is doing. */
+        u32 taps = StickClickDoubleTaps();
+        if (taps != g_SeenTaps) {
+            g_SeenTaps = taps;
+            int shown = 0;
+            for (auto& p : peers) {
+                if (!p.present) continue;
+                shown++;
+                if (!p.has_state || tick_now - static_cast<s64>(p.state_tick) > stale || p.state.max_hp == 0) {
+                    notify::Show("%.10s: no word (loading?)", p.name);
+                    continue;
+                }
+                char hearts[24], where[32];
+                Hearts(p.state.health, hearts, sizeof(hearts));
+                if (p.state.map_area != area) {
+                    std::snprintf(where, sizeof(where), area == OverworldArea() ? "in a shrine" : "outside");
+                } else {
+                    char dist[16];
+                    Distance(p.state.pos, me, dist, sizeof(dist));
+                    std::snprintf(where, sizeof(where), "%s away", dist);
+                }
+                bool down = (p.state.anim_hash & 0xff) == anim::Down;
+                notify::Show("%.10s: %s%s of %u, %s", p.name, down ? "DOWN, " : "", hearts, (unsigned)(p.state.max_hp / 4), where);
+            }
+            if (!shown) notify::Show("Co-op: no partner is connected");
+        }
+
         for (auto& p : peers) {
             if (!p.present || !p.has_state || tick_now - static_cast<s64>(p.state_tick) > stale) continue;
             u16 life = p.state.health, max = p.state.max_hp;
             if (max == 0) continue;
             Watch& w = For(p.id);
             Travel(w, p, me, area, now);
+            /* Meeting up again: who it is and how they're doing. */
+            {
+                float dx = p.state.pos[0] - me[0], dy = p.state.pos[1] - me[1], dz = p.state.pos[2] - me[2];
+                float d2 = dx * dx + dy * dy + dz * dz;
+                if (p.state.map_area != area || d2 > ApartDist * ApartDist) {
+                    w.apart = true;
+                } else if (w.apart && d2 < MeetDist * MeetDist) {
+                    w.apart = false;
+                    if (now - w.met_at >= MeetRepeatMs) {
+                        w.met_at = now;
+                        char hearts[24];
+                        Hearts(life, hearts, sizeof(hearts));
+                        notify::Show("%.10s is with you (%s of %u)", p.name, hearts, (unsigned)(max / 4));
+                    }
+                }
+            }
             if (w.low) {
                 if (IsFine(life, max)) w.low = false;
                 continue;
@@ -159,5 +246,12 @@ namespace coop::game::status {
             Logging.Log("[coop] status: %s is low (%u/%u)", p.name, life, max);
             notify::Show("%.10s is low (%s)%s", p.name, hearts, where);
         }
+    }
+
+    void OnLocalWhistle() { g_Whistled.store(true); }
+
+    void OnPartnerCall(u8 from, const float* pos) {
+        std::memcpy(g_Calls[from].pos, pos, sizeof(g_Calls[from].pos));
+        g_Calls[from].pending.store(true);
     }
 }

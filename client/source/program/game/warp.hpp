@@ -18,7 +18,8 @@ namespace coop::game::warp {
     void HoldLinkXZ(const float (&pos)[3]);
 
     /* Warps to this partner without a message of its own (the revive's respawn). */
-    bool GoToPartner(u8 id, s64 now_ms);
+    /* `travel`: a far partner, or one in another area, may be reached through a loading screen (see warp_travel). */
+    bool GoToPartner(u8 id, s64 now_ms, bool travel = false);
     /* Test helper (test_follow): keep warping to the nearest partner once they're this far away. */
     /* Warping right now, or arrived within the last few seconds. */
     bool Busy(s64 now_ms);
@@ -27,6 +28,8 @@ namespace coop::game::warp {
     void Install();
     /* config.ini warp_direct: a far warp goes in one jump (see warp.cpp). */
     void SetDirect(bool on);
+    void SetTravel(bool on);
+    bool Traveling(); /* a stage change of ours has been asked for and hasn't finished loading */ /* reach far partners and partners in shrines by the game's own stage change */
     void SetTestFollow(int metres, const char* leader);
     /* A warp is under way or has just landed: hearts lost now come back.
        Gives the hearts he set off with. */

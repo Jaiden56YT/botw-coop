@@ -16,6 +16,8 @@ namespace coop::game::items {
 
     /* Game thread, every tick. */
     void Tick(s64 now_ms);
+    /* Only the part of Tick that notices the game's clock stopping (a pause, a load). */
+    void WatchClock(s64 now_ms);
 
     /* The mod itself just set the clock (a guest following the host's time):
        not the clock running. */

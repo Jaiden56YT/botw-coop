@@ -342,11 +342,41 @@ def write_sync_flags(bootup_pack: Path, out_file: Path) -> int:
     return len(names)
 
 
+def write_travel_points(bootup_pack: Path, out_file: Path) -> int:
+    """Lists the overworld's fast-travel points (shrines, towers, labs) from Map/MainField/Static.smubin:
+    the stage and start-position names the game's own stage change takes, and where each is. The mod travels to the
+    one nearest a far-away partner, then warps the rest of the way."""
+    boot = oead.Sarc(bootup_pack.read_bytes())
+    f = boot.get_file("Map/MainField/Static.smubin")
+    if f is None:
+        return 0
+    static = oead.byml.from_binary(oead.yaz0.decompress(bytes(f.data)))
+
+    def num(v):
+        return float(v.v if hasattr(v, "v") else v)
+
+    lines = []
+    for m in static.get("LocationMarker", []):
+        stage, start, at = str(m.get("WarpDestMapName", "")), str(m.get("WarpDestPosName", "")), m.get("Translate")
+        if not stage.startswith("MainField/") or not start or at is None or " " in stage or " " in start:
+            continue
+        # Shrines, towers, the two labs and the Shrine of Resurrection are the map's travel points. The list also
+        # names villages and other places with destinations that aren't theirs (Kakariko's is "MainField/F-2").
+        if str(m.get("Icon", "")) not in ("Dungeon", "Tower", "Labo", "StartPoint"):
+            continue
+        lines.append(f"{stage} {start} {num(at['X']):.1f} {num(at['Y']):.1f} {num(at['Z']):.1f}")
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    out_file.write_text("\n".join(sorted(lines)) + "\n", newline="\n")
+    return len(lines)
+
+
 def main():
     src, out = Path(sys.argv[1]), Path(sys.argv[2])
     if (src / "Bootup.pack").exists():
         n = write_sync_flags(src / "Bootup.pack", out / "botw-coop" / "sync-flags.txt")
         print(f"sync-flags.txt: {n} flags")
+        n = write_travel_points(src / "Bootup.pack", out / "botw-coop" / "travel-points.txt")
+        print(f"travel-points.txt: {n} fast-travel points")
     calc = rstb.SizeCalculator()
 
     table = rstb.ResourceSizeTable(

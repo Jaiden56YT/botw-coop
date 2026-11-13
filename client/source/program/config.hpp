@@ -22,6 +22,10 @@ namespace coop {
         char test_drop[64];   /* debug: spawn this item at Link's feet as if dropped from the inventory */
         bool log_file;        /* also write the log to sd:/botw-coop/log.txt (a Switch has no other way to show it) */
         bool warp_direct;     /* a far warp goes in one jump, not in hops through the sky (see warp.cpp) */
+        bool warp_travel;     /* a far partner, or one in a shrine, is reached by the game's own stage change (a loading screen) */
+        int enemy_anims;      /* 0 off, 1 a partner's enemy also plays its owner's sequences, 2 and drops its own (see enemies.hpp) */
+        bool test_enemy_as;   /* log every sequence the game starts on an enemy near us */
+        bool test_enemy_mute; /* treat every enemy near us as it is while we're down: nobody's, standing still */
         bool beasts_anywhere; /* share Divine Beast clears with partners who weren't inside with you */
         char test_gate[64];   /* debug: flag that stands in for "has the paraglider" (progress is held until it's set) */
         int test_heal;        /* debug: once a partner is near, drop to this life (quarter hearts) to test shared meals */

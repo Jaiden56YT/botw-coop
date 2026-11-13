@@ -15,6 +15,7 @@
 #include "game/meals.hpp"
 #include "game/map.hpp"
 #include "game/saves.hpp"
+#include "game/console.hpp"
 #include "game/warp.hpp"
 
 namespace {

@@ -40,6 +40,8 @@ namespace coop::net {
         Heal         = 38, /* any -> all: u16 quarter hearts: I just ate this much healing near you */
         EnemyPos     = 37, /* any -> all: u32 area, u8 count, then per enemy: u32 HashId, f32 pos[3], f32 rot_y */
         Weapons      = 35, /* any -> all: u8 count, then per weapon: string name, string bone, f32[12] offset from the bone */
+        Call         = 42, /* any -> all: f32 pos[3]: I whistled here */
+        EnemyAnim    = 41, /* any -> all: u32 area, u8 count, then per sequence an enemy's owner saw start: u32 HashId, s8 slot, s8 bank, u8 flag, f32 a, f32 b, string name */
     };
 
     /* Per-frame state of a player's own Link. Must stay 44 bytes. */

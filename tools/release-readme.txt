@@ -27,7 +27,8 @@ What you need
   and read docs/SWITCH.md.
 
   For Savage Wind Recomp (the game as a PC program, built from source):
-  read docs/RECOMP.md first. It is a longer road, and untried on Windows.
+  you don't need this package. Clone the Savage Wind source that loads
+  code mods and run its install-coop.cmd: see docs/RECOMP.md.
 
 2. Settings
 

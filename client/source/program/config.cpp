@@ -60,6 +60,14 @@ namespace coop {
             else if (is("test_drop")) Copy(out.test_drop, sizeof(out.test_drop), val, vlen);
             else if (is("beasts_anywhere")) out.beasts_anywhere = IsTrue(val, vlen);
             else if (is("warp_direct")) out.warp_direct = IsTrue(val, vlen);
+            else if (is("warp_travel")) out.warp_travel = IsTrue(val, vlen);
+            else if (is("test_enemy_as")) out.test_enemy_as = IsTrue(val, vlen);
+            else if (is("test_enemy_mute")) out.test_enemy_mute = IsTrue(val, vlen);
+            else if (is("enemy_anims")) {
+                char tmp[8] = {};
+                Copy(tmp, sizeof(tmp), val, vlen);
+                out.enemy_anims = std::atoi(tmp);
+            }
             else if (is("log_file")) out.log_file = IsTrue(val, vlen);
             else if (is("test_gate")) Copy(out.test_gate, sizeof(out.test_gate), val, vlen);
             else if (is("test_heal")) {
@@ -187,6 +195,10 @@ namespace coop {
         out.test_leader[0] = '\0';
         out.beasts_anywhere = false;
         out.warp_direct = false;
+        out.warp_travel = true;
+        out.enemy_anims = 2;
+        out.test_enemy_as = false;
+        out.test_enemy_mute = false;
         out.log_file = false;
         out.test_gate[0] = '\0';
 

@@ -31,6 +31,22 @@ namespace coop::game {
     /* Plays one of the local player's own body sequences ("Dead", "Wait"). Game thread. */
     /* One of the weapon actors the mod put on a partner's puppet. */
     bool IsPuppetWeapon(uintptr_t actor);
+
+    /* A number an actor is created with (the game's InstParamPack): an int (type 0) or a float (type 2), by name.
+       The key must stay valid: the pack keeps the pointer. */
+    struct SpawnParam {
+        const char* key;
+        u8 type;
+        union {
+            s32 i;
+            float f;
+        };
+    };
+    constexpr u8 SpawnInt = 0, SpawnFloat = 2;
+    uintptr_t SpawnActorWith(const char* name, const float (&pos)[3], float rot_y, const SpawnParam* params, int count);
+
+    /* Starts a sequence on any actor's sequence list, with the game's own arguments. */
+    bool StartAS(uintptr_t as_list, float a, float b, const char* name, int target, int bank, bool flag);
     bool PlayLocalAS(const char* name);
     /* While on, the game's own body sequences for the local player are dropped,
        so the one started with PlayLocalAS stays. */

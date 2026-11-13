@@ -2,6 +2,10 @@
 //
 //   dotnet run --project tools/RomfsTool -- <base.nsp> <update.nsp> list [substring]
 //   dotnet run --project tools/RomfsTool -- <base.nsp> <update.nsp> extract <romfs path> <out file>
+//   dotnet run --project tools/RomfsTool -- <base.nsp> <update.nsp> extract-all <out dir> [path prefix]
+//       the whole RomFS (update applied), folders kept: what Savage Wind Recomp reads as extracted/romfs
+//   dotnet run --project tools/RomfsTool -- <base.nsp> <update.nsp> exefs <out dir>
+//       the update's ExeFS (main, main.npdm, rtld, sdk, subsdk0): extracted/exefs
 //
 // Keys come from ~/.switch/prod.keys (and title.keys if present).
 
@@ -82,9 +86,58 @@ switch (args[2])
         Console.WriteLine($"wrote {n} files to {args[4]}");
         return 0;
     }
+    case "extract-all":
+    {
+        string prefix = args.Length > 4 ? (args[4].StartsWith('/') ? args[4] : "/" + args[4]) : "/";
+        int n = 0;
+        long bytes = 0;
+        var started = DateTime.Now;
+        foreach (DirectoryEntryEx entry in romfs.EnumerateEntries("/", "*", SearchOptions.RecurseSubdirectories))
+        {
+            if (entry.Type != DirectoryEntryType.File || !entry.FullPath.StartsWith(prefix)) continue;
+            string dest = Path.Combine(args[3], entry.FullPath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+            CopyOut(romfs, entry.FullPath, dest, entry.Size);
+            n++;
+            bytes += entry.Size;
+            if (n % 2000 == 0) Console.WriteLine($"  {n} files, {bytes >> 20} MB");
+        }
+        Console.WriteLine($"wrote {n} files ({bytes >> 20} MB) to {args[3]} in {(DateTime.Now - started).TotalSeconds:F0} s");
+        return 0;
+    }
+    case "exefs":
+    {
+        // An update carries the whole ExeFS of its version (the code isn't patched like the RomFS).
+        using UniqueRef<IFileSystem> exefs = new();
+        exefs.Reset(patchNca.OpenFileSystem(NcaSectionType.Code, IntegrityCheckLevel.None));
+        int n = 0;
+        foreach (DirectoryEntryEx entry in exefs.Get.EnumerateEntries("/", "*"))
+        {
+            if (entry.Type != DirectoryEntryType.File) continue;
+            CopyOut(exefs.Get, entry.FullPath, Path.Combine(args[3], entry.Name), entry.Size);
+            n++;
+        }
+        Console.WriteLine($"wrote {n} files to {args[3]}");
+        return 0;
+    }
     default:
         Console.Error.WriteLine($"unknown command {args[2]}");
         return 2;
+}
+
+static void CopyOut(IFileSystem fs, string path, string dest, long size)
+{
+    Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+    using UniqueRef<IFile> file = new();
+    fs.OpenFile(ref file.Ref, path.ToU8Span(), OpenMode.Read).ThrowIfFailure();
+    using FileStream output = File.Create(dest);
+    byte[] buf = new byte[4 << 20];
+    for (long at = 0; at < size;)
+    {
+        file.Get.Read(out long got, at, buf.AsSpan(0, (int)Math.Min(buf.Length, size - at))).ThrowIfFailure();
+        if (got <= 0) throw new IOException($"{path}: read stopped at {at} of {size}");
+        output.Write(buf, 0, (int)got);
+        at += got;
+    }
 }
 
 static Nca OpenProgramNca(string nspPath, KeySet keySet)

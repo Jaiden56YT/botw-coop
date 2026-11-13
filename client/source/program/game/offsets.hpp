@@ -211,6 +211,10 @@ namespace coop::game::offsets {
     /* bool (): are the map sections around Link (200 m each way) still
        loading? Asked on every update; while true the game pauses the world
        (pause reason 9). Found by the Savage Wind Recomp project. */
+    /* void (const sead::SafeString& stage, const sead::SafeString& start_pos, int, bool): the game's own stage
+       change, as the event action with WarpDestMapName / WarpDestPosName calls it (main+0x616d94). The stage is
+       "MainField/E-4" or "CDungeon/Dungeon045"; the start position a name from the map files. */
+    constexpr uintptr_t StageInfo_ChangeScene = 0x12082e0;
     constexpr uintptr_t World_GroundLoading = 0x10b7a40;
     /* The player's "highest point since leaving the ground", kept twice: fall
        damage is the drop from it (found by the Savage Wind Recomp project). */

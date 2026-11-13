@@ -18,6 +18,11 @@ namespace coop::game::gear {
 
         constexpr s64 ScanMs = 1000;
         constexpr s64 ResendMs = 5000;
+        /* Armor that seems to have come off is only believed after this long:
+           while an area loads (a warp, a shrine door) the worn pieces aren't
+           on Link for a moment, and partners saw the puppet undress and dress. */
+        constexpr s64 OffSettleMs = 3000;
+        s64 g_OffSince = 0;
 
         uintptr_t Base() { return exl::util::GetMainModuleInfo().m_Total.m_Start; }
         template<typename T> T Read(uintptr_t addr) { return *reinterpret_cast<const T*>(addr); }
@@ -124,6 +129,13 @@ namespace coop::game::gear {
         }
         reinterpret_cast<CsFn>(Base() + offsets::CriticalSection_Unlock)(cs);
 
+        bool less = false;
+        for (int s = 0; s < Slots; s++) less |= g_Sent[s][0] && !worn[s][0];
+        if (less) {
+            if (!g_OffSince) g_OffSince = now;
+            if (now - g_OffSince < OffSettleMs) return;
+        }
+        g_OffSince = 0;
         bool changed = std::memcmp(worn, g_Sent, sizeof(worn)) != 0;
         if (!changed && now - g_LastSend < ResendMs) return;
         if (changed) Logging.Log("[coop] gear: wearing %s / %s / %s", worn[0][0] ? worn[0] : "-",
