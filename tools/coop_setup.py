@@ -555,7 +555,8 @@ def main():
         where = "an MSYS2 UCRT64 shell" if WINDOWS else "a terminal"
         print(f"  - Build Savage Wind's game code with the mod in it: in {where} in\n      {recomp}\n"
               f"    run: {build}   (or run this setup again; it builds when the tools are there)")
-        print(f"  - Start the game with {'play-coop.cmd' if WINDOWS else './play-coop.sh'} in that folder. "
+    if recomp:
+        print(f"  - Start the game with {'play-coop.cmd' if WINDOWS else './play-coop.sh'} in {recomp}. "
               "More: docs/RECOMP.md")
     if relay:
         print(f"  - One player starts the relay and leaves it running:\n      \"{relay}\"")
